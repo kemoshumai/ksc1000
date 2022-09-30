@@ -1,0 +1,70 @@
+///トップレベル
+Program = {
+    SOI ~ statement* ~ "みーしぇちゃんかわいいね"
+}
+
+///文
+statement = {
+    variable_declaration_statement
+    // | function_declaration_statement
+    | expression ~ ";"
+}
+
+///式
+expression = {
+    numeric_expression
+    | integer
+    | identifier
+}
+
+///識別子
+identifier = @{
+    (alphabet | symbol)+
+}
+
+///変数宣言
+variable_declaration_statement = @{
+    variable_declaration_typename_part ~ " " ~ variable_declaration_expression_part
+}
+variable_declaration_typename_part = !{
+    identifier
+}
+variable_declaration_expression_part = !{
+    identifier ~ "=" ~ expression ~ ";"
+}
+
+///演算
+operation = _{ add | subtract | multiply | divide | divideint | power }
+    add      = { "+" }
+    subtract = { "-" }
+    multiply = { "*" }
+    divide   = { "/" }
+    divideint   = { "//" }
+    power    = { "^" }
+
+///四則演算
+numeric_expression = { term ~ (operation ~ term)* }
+term = _{ primary | "(" ~ numeric_expression ~ ")" }
+
+
+///数
+primary = {
+    number
+    | identifier
+}
+
+///整数
+integer = @{ ("+"|"-")? ~ number_head ~ number_atom* }
+number = @{ integer ~ ( "." ~ number_atom* )? }
+
+
+///アルファベット大文字と小文字
+alphabet = @{'a'..'z' | 'A'..'Z'}
+///識別子に使える記号
+symbol = @{"_"}
+///数字
+number_atom = @{'0'..'9'}
+number_head = @{'1'..'9'}
+
+ws_ = @{WHITESPACE}
+WHITESPACE = _{" " | "\t" | "\r\n" | "\n"}
