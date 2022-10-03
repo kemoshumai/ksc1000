@@ -21,7 +21,12 @@ fn plot(pair: Pair<Rule>, indent: i32) {
 
 fn main() {
     let sourcecode = " \
-        ( 1 + a ) * 3;
+        Number a = 42;
+        {
+            Number b = a;
+            Number c = b*4;
+        }
+        Number d = 1 + 2 * 3;
         みーしぇちゃんかわいいね
     ";
     let mut pairs = ProgramParser::parse(Rule::Program, sourcecode).unwrap();

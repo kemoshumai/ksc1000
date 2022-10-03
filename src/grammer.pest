@@ -7,6 +7,7 @@ Program = {
 statement = {
     variable_declaration_statement
     // | function_declaration_statement
+    | expression_as_statement
     | expression ~ ";"
 }
 
@@ -15,6 +16,16 @@ expression = {
     numeric_expression
     | integer
     | identifier
+}
+
+// セミコロンの要らない式
+expression_as_statement = {
+    block
+}
+
+// ブロック
+block = {
+    "{" ~ statement* ~ "}"
 }
 
 ///識別子
