@@ -17,7 +17,8 @@ struct Program{
 
 /// 文
 enum Statement{
-    ExpressionStatement(ExpressionStatement)
+    ExpressionStatement(ExpressionStatement),
+    FunctionDeclaration(FunctionDeclaration)
 }
 
 /// 式文。式はセミコロンを付けると文になる。ブロックは例外的に式にも文にも成れず、式文にのみ成れる。
@@ -34,7 +35,9 @@ enum Expression{
     ForExpression(Box<ForExpression>),
     WhileExpression(Box<WhileExpression>),
     StringLiteral(StringLiteral),
-    NumberLiteral(NumberLiteral)
+    NumberLiteral(NumberLiteral),
+    BinaryOperator(BinaryOperator),
+    EvalVariableExpression(EvalVariableExpression)
 }
 
 /// 関数呼び出し式
@@ -93,6 +96,23 @@ struct WhileExpression{
     contemt: ExpressionStatement
 }
 
+///二項演算子
+struct BinaryOperator{
+    method: BinaryOperatorMethod,
+    left: Box<Expression>,
+    right: Box<Expression>
+}
+
+///二項演算子の種類
+enum BinaryOperatorMethod{
+    ADD, SUB, MUL, DIV, DivInt
+}
+
+///変数呼び出し
+struct EvalVariableExpression{
+    target: Identifier
+}
+
 ///固定文字列リテラル
 struct StringLiteral{
     string: String
@@ -126,10 +146,14 @@ impl<'ctx> Compiler<'ctx>{
 
     /// ASTのルートから再帰的にコンパイルを実行
     /// 借用で渡されたProgram構造体をコンパイルし、LLVM-IRを返す。
-    fn compile(&mut self, programroot:&Program, is_entry: bool) -> Option<&str>{
+    fn compile(&mut self, programroot:&Program, is_entry: bool) -> Result<String, std::str::Utf8Error>{
         debug!("Compiling init....");
         self.compile_main_function(is_entry);
-        Some("")
+        let Program { statements } = programroot;
+        for statement in statements{
+            self.compile_statement(statement);
+        }
+        return Ok(String::from(self.module.print_to_string().to_str()?));
     }
 
     /// メイン関数を作る
@@ -152,7 +176,8 @@ impl<'ctx> Compiler<'ctx>{
     /// 文をコンパイルする
     fn compile_statement(&self, statement: &Statement) {
         let _ = match statement {
-            Statement::ExpressionStatement(statement) => self.compile_expression_statement(&statement)
+            Statement::ExpressionStatement(statement) => self.compile_expression_statement(&statement),
+            Statement::FunctionDeclaration(_) => todo!(),
         };
     }
 
@@ -181,6 +206,8 @@ impl<'ctx> Compiler<'ctx>{
             Expression::WhileExpression(_) => todo!(),
             Expression::StringLiteral(_) => todo!(),
             Expression::NumberLiteral(_) => todo!(),
+            Expression::BinaryOperator(_) => todo!(),
+            Expression::EvalVariableExpression(_) => todo!(),
         }
     }
 
@@ -222,7 +249,7 @@ impl<'ctx> Compiler<'ctx>{
     }
 
 
-    fn compile_variable_declaration(&self, variable_decralation: &VariableDeclaration) -> Object{
+    fn compile_variable_declaration(&mut self, variable_decralation: &VariableDeclaration) -> Object{
         let ty = match variable_decralation.value_type.name.as_str() {
             "Number" => self.context.f64_type(),
             _ => panic!("Non-primitve type is not implemented.")
@@ -232,8 +259,8 @@ impl<'ctx> Compiler<'ctx>{
             // もし返り値がNumber型だったら
             self.builder.build_store(var_pointer, basicvalue);
         }
-        self.variable_table.insert(name.clone(), var_pointer);
-
+        self.variable_table.insert(variable_decralation.name.name.clone(), var_pointer);
+        return Object::Number(var_pointer.as_any_value_enum().into_float_value());
     }
 
     fn compile_if_expression(&self, if_expression: &IfExpression) -> Object{
@@ -306,16 +333,78 @@ fn main() {
     let mut compiler = Compiler{
         context: &context,
         module,
-        builder
+        builder,
+        variable_table: HashMap::new()
     };
 
     let program = Program{
-        statements:vec![]
+        statements:vec![
+            Statement::FunctionDeclaration(
+                FunctionDeclaration{
+                    name: Identifier{
+                        name: String::from("pow")
+                    },
+                    params: vec![
+                        Param{
+                            value_type: Identifier{
+                                name: String::from("Number")
+                            },
+                            name: Identifier{
+                                name: String::from("n")
+                            }
+                        }
+                    ],
+                    content: ExpressionStatement::Block(Block{
+                        statements: vec![
+                            Statement::ExpressionStatement(
+                                ExpressionStatement::Expression(
+                                    Expression::BinaryOperator(BinaryOperator{
+                                        method:BinaryOperatorMethod::ADD,
+                                        left: Box::from(Expression::EvalVariableExpression(EvalVariableExpression { target: Identifier{name: String::from("n")} })),
+                                        right: Box::from(Expression::EvalVariableExpression(EvalVariableExpression { target: Identifier{name: String::from("n")} }))
+                                    })
+                                )
+                            )
+                        ]
+                    })
+                }
+            ),
+            Statement::ExpressionStatement(
+                ExpressionStatement::Expression(
+                    Expression::VariableDeclaration(Box::from(VariableDeclaration{
+                        value_type: Identifier { name: String::from("Number") },
+                        name: Identifier { name: String::from("n") },
+                        init_value: Expression::NumberLiteral(NumberLiteral { number: 2.0 })
+                    }))
+                )
+            ),
+            Statement::ExpressionStatement(
+                ExpressionStatement::Expression(
+                    Expression::FunctionCall(FunctionCall{
+                        callname: Identifier{
+                            name: String::from("print")
+                        },
+                        args: vec![
+                            Expression::FunctionCall(FunctionCall {
+                                callname: Identifier { name: String::from("pow") },
+                                args: vec![Expression::EvalVariableExpression(EvalVariableExpression {
+                                    target: Identifier { name: String::from("n") }
+                                })]
+                            })
+                        ]
+                    })
+                )
+            )
+        ]
     };
 
-    if let Some(compiled_ir) = compiler.compile(&program, true) {
-        println!("======== LLVM IR ========");
-        println!("{}",compiled_ir);
-        println!("========== END ==========");
+    match compiler.compile(&program, true) 
+    {
+        Ok(compiled_ir) => {
+            println!("======== LLVM IR ========");
+            println!("{}",compiled_ir);
+            println!("========== END ==========");
+        },
+        Err(e) => panic!("Compile error! {}", e),
     }
 }
