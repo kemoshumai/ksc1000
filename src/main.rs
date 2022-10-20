@@ -58,6 +58,7 @@ struct Block{
 
 ///関数宣言文
 struct FunctionDeclaration{
+    return_value_type: Identifier,
     name: Identifier,
     params: Vec<Param>,
     content: ExpressionStatement
@@ -177,8 +178,17 @@ impl<'ctx> Compiler<'ctx>{
     fn compile_statement(&self, statement: &Statement) {
         let _ = match statement {
             Statement::ExpressionStatement(statement) => self.compile_expression_statement(&statement),
-            Statement::FunctionDeclaration(_) => todo!(),
+            Statement::FunctionDeclaration(function_declaration) => self.compile_function_declaration(function_declaration),
         };
+    }
+
+    fn compile_function_declaration(&self, function_declaration: &FunctionDeclaration){
+        let ty = match function_declaration.return_value_type.name.as_str() {
+            "Number" => self.context.f64_type().fn_type(param_types, is_var_args),
+            _ => panic!("Non-primitve type is requested.")
+        };
+        let name = function_declaration.name.name.as_str();
+        let created_fn = self.module.add_function(name, ty, linkage)
     }
 
     /// 式文をコンパイルする
