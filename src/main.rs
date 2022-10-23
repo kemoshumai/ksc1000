@@ -7,7 +7,8 @@ struct Compiler<'a>{
     builder: &'a Builder<'a>,
     module: Option<Module<'a>>,
     types: HashMap<String, AnyTypeEnum<'a>>,
-    stack: Vec<FunctionValue<'a>>
+    stack_function: Vec<&'a str>,
+    stack: HashMap<&'a str, PointerValue<'a>>
 }
 
 /// コンパイル関連関数 (実際にIRを書く)
@@ -19,7 +20,8 @@ impl<'a> Compiler<'a>{
             builder,
             module: None,
             types: HashMap::new(),
-            stack: vec![]
+            stack_function: vec![],
+            stack: HashMap::new()
         };
     }
 
@@ -50,7 +52,7 @@ impl<'a> Compiler<'a>{
     }
 
     /// 関数を作成(宣言してブロックを作成)
-    fn create_function(&mut self, name: &str, return_type: &str, param_types: Vec<&str>) {
+    fn create_function(&mut self, name: &'a str, return_type: &str, param_types: &Vec<&str>, param_names: &Vec<&'a str>) -> FunctionValue {
         // 仮引数の型を参照
         let param_types = &param_types.iter().map(|param_type| {
             if let Some(&param_type) = self.types.get(&param_type.to_string()) {
@@ -83,12 +85,20 @@ impl<'a> Compiler<'a>{
                 AnyTypeEnum::VoidType(t) => t.fn_type(param_types, false),
             };
             if let Some(module) = &self.module {
+                self.stack_function.push(name);
                 let func = module.add_function(name, fn_type, None);
-
-                let basic_block = self.context.append_basic_block(func, name);
-                self.builder.position_at_end(basic_block);
-
-                self.stack.push(func);
+                let func_bb = self.context.append_basic_block(func, name);
+                self.builder.position_at_end(func_bb);
+                if param_types.len() != param_names.len() {
+                    panic!("The number of parameters does not match the type and name.");
+                }
+                for (i, arg) in func.get_param_iter().enumerate() {
+                    let param_name = param_names[i];
+                    let alloca = self.builder.build_alloca(arg.get_type(), param_name);
+                    self.builder.build_store(alloca, arg);
+                    self.stack.insert(param_name, alloca);
+                }
+                return func;
             }
             else
             {
@@ -101,7 +111,7 @@ impl<'a> Compiler<'a>{
     }
 
     /// 関数を作成(宣言のみ)
-    fn create_function_declare(&self, name: &str, return_type: &str, param_types: Vec<&str>) -> FunctionValue {
+    fn create_function_declare(&mut self, name: &'a str, return_type: &str, param_types: &Vec<&str>) -> FunctionValue {
 
         // 仮引数の型を参照
         let param_types = &param_types.iter().map(|param_type| {
@@ -135,6 +145,7 @@ impl<'a> Compiler<'a>{
                 AnyTypeEnum::VoidType(t) => t.fn_type(param_types, false),
             };
             if let Some(module) = &self.module {
+                self.stack_function.push(name);
                 return module.add_function(name, fn_type, None);
             }
             else
@@ -165,11 +176,15 @@ impl<'a> Compiler<'a>{
                     .builder
                     .build_int_compare(IntPredicate::NE, condition_bool, zero_const, "ifcond");
         
-        let parent = self.stack.last().unwrap_or_else(||panic!("No function found!"));
+        let parent_func_name = self.stack_function.last().unwrap_or_else(||panic!("No function found!"));
+        let parent = self.module.as_ref()
+                        .unwrap_or_else(||panic!("No module."))
+                        .get_function(&parent_func_name)
+                        .unwrap_or_else(||panic!("No function."));
 
-        let then_block = self.context.append_basic_block(*parent, "then");
-        let else_block = self.context.append_basic_block(*parent, "else");
-        let cont_block = self.context.append_basic_block(*parent, "ifcont");
+        let then_block = self.context.append_basic_block(parent, "then");
+        let else_block = self.context.append_basic_block(parent, "else");
+        let cont_block = self.context.append_basic_block(parent, "ifcont");
 
         self.builder.build_conditional_branch(condition, then_block, else_block);
 
@@ -218,7 +233,7 @@ fn main() {
 
     compiler.init_primitive_types();
     compiler.create_module("main");
-    compiler.create_function("gcd", "Number", vec!["Number", "Number"]);
+    compiler.create_function("gcd", "Number", &vec!["Number", "Number"], &vec!["a","b"]);
 
     println!("======== LLVM IR ========");
     println!("{}", compiler.emit_as_text().unwrap());
@@ -236,7 +251,7 @@ fn basic_function_declaration_test()
 
     compiler.init_primitive_types();
     compiler.create_module("main");
-    compiler.create_function_declare("main", "i32", vec![]);
+    compiler.create_function_declare("main", "i32", &vec![]);
     compiler.create_return(&None);
 
     assert_eq!(compiler.emit_as_text().unwrap(), "; ModuleID = 'main'\nsource_filename = \"main\"\n\ndeclare i32 @main()\n")
@@ -251,7 +266,7 @@ fn return_test()
 
     compiler.init_primitive_types();
     compiler.create_module("main");
-    compiler.create_function("main", "i32", vec![]);
+    compiler.create_function("main", "i32", &vec![],&vec![]);
     compiler.create_return(&None);
 
     println!("{:?}", compiler.emit_as_text());
