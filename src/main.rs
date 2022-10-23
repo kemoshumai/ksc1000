@@ -1,5 +1,5 @@
-use inkwell::{context::Context, builder::Builder, module::Module, types::{AnyTypeEnum, BasicMetadataTypeEnum}, values::{FunctionValue, BasicValue, AnyValue, BasicValueEnum, IntValue}, IntPredicate};
-use std::{env, collections::HashMap};
+use inkwell::{context::Context, builder::Builder, module::Module, types::{AnyTypeEnum, BasicMetadataTypeEnum}, values::{FunctionValue, BasicValue, AnyValue, BasicValueEnum, IntValue, AnyValueEnum, PointerValue}, IntPredicate, basic_block::BasicBlock};
+use std::{env, collections::HashMap, mem::discriminant};
 
 /// コンパイラ構造体
 struct Compiler<'a>{
@@ -157,9 +157,9 @@ impl<'a> Compiler<'a>{
         }
     }
 
-    /// if式を作成
+    /// if式を作成(分岐側)
     /// (condition_bool) ? (then_value) : (else_value)
-    fn create_if(&self, condition_bool: IntValue, then_value: &BasicValueEnum, else_value: &BasicValueEnum) -> BasicValueEnum {
+    fn create_if_branch(&self, condition_bool: IntValue) -> (BasicBlock, BasicBlock, BasicBlock) {
         let zero_const = self.context.i8_type().const_zero();
         let condition = self
                     .builder
@@ -173,12 +173,30 @@ impl<'a> Compiler<'a>{
 
         self.builder.build_conditional_branch(condition, then_block, else_block);
 
-        // build then block
-        self.builder.position_at_end(then_block);
-        self.builder.build_unconditional_branch(cont_block);
-        let then_bb = self.builder.get_insert_block().unwrap();
+        return (then_block, else_block, cont_block);
+    }
 
-        return todo!();
+    /// if式を作成(書き込み対象のブロックを選ぶ)
+    fn start_if_branch(&self, branch: &BasicBlock){
+        self.builder.position_at_end(*branch);
+    }
+
+    /// if式を作成(書き込み終わり)
+    fn end_if_branch(&self, branch: &BasicBlock) -> BasicBlock{
+        self.builder.build_unconditional_branch(*branch);
+        return self.builder.get_insert_block().unwrap();
+    }
+
+    /// if式を作成(マージ)
+    /// TODO: phiの値を戻り値で返す。
+    fn merge_if_branch(&self, then_value: &BasicValueEnum, else_value: &BasicValueEnum, then_block: BasicBlock, else_block: BasicBlock, cont_block: BasicBlock) {
+        self.builder.position_at_end(cont_block);
+        if discriminant(then_value) != discriminant(else_value) {
+            panic!("The return value on then and the return value on else have different types.");
+        }
+        // phiはthen_valueの型と等しくなるが、そもそもelseとthenで型があってない場合エラーを吐かせているので、elseでも同じ結果になる。
+        let phi = self.builder.build_phi(then_value.get_type(), "iftmp");
+        phi.add_incoming(&[(then_value, then_block), (else_value, else_block)]);
     }
 
 }
