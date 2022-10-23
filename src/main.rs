@@ -1,23 +1,25 @@
-use inkwell::{context::Context, builder::Builder, module::Module, types::{AnyTypeEnum, BasicMetadataTypeEnum}, values::FunctionValue};
+use inkwell::{context::Context, builder::Builder, module::Module, types::{AnyTypeEnum, BasicMetadataTypeEnum}, values::{FunctionValue, BasicValue, AnyValue, BasicValueEnum, IntValue}, IntPredicate};
 use std::{env, collections::HashMap};
 
 /// コンパイラ構造体
-struct Compiler<'ctx>{
-    context: &'ctx Context,
-    builder: Builder<'ctx>,
-    module: Option<Module<'ctx>>,
-    types: HashMap<String, AnyTypeEnum<'ctx>>
+struct Compiler<'a>{
+    context: &'a Context,
+    builder: Builder<'a>,
+    module: Option<Module<'a>>,
+    types: HashMap<String, AnyTypeEnum<'a>>,
+    stack: Vec<FunctionValue<'a>>
 }
 
 /// コンパイル関連関数 (実際にIRを書く)
-impl<'ctx> Compiler<'ctx>{
+impl<'a> Compiler<'a>{
 
-    fn new(context: &'ctx Context) -> Compiler<'ctx>{
+    fn new(context: &'a Context) -> Compiler<'a>{
         return Compiler{
             context,
             builder: context.create_builder(),
             module: None,
-            types: HashMap::new()
+            types: HashMap::new(),
+            stack: vec![]
         };
     }
 
@@ -48,11 +50,54 @@ impl<'ctx> Compiler<'ctx>{
     }
 
     /// 関数を作成(宣言してブロックを作成)
-    fn create_function(&self, name: &str, return_type: &str, param_types: Vec<&str>) -> FunctionValue {
-        let func = self.create_function_declare(name, return_type, param_types);
-        let basic_block = self.context.append_basic_block(func, name);
-        self.builder.position_at_end(basic_block);
-        return func;
+    fn create_function(&mut self, name: &str, return_type: &str, param_types: Vec<&str>) {
+        // 仮引数の型を参照
+        let param_types = &param_types.iter().map(|param_type| {
+            if let Some(&param_type) = self.types.get(&param_type.to_string()) {
+                return match param_type {
+                    AnyTypeEnum::ArrayType(t) => BasicMetadataTypeEnum::ArrayType(t),
+                    AnyTypeEnum::FloatType(t) => BasicMetadataTypeEnum::FloatType(t),
+                    AnyTypeEnum::FunctionType(_) => panic!("Function type cannot be param."),
+                    AnyTypeEnum::IntType(t) => BasicMetadataTypeEnum::IntType(t),
+                    AnyTypeEnum::PointerType(t) => BasicMetadataTypeEnum::PointerType(t),
+                    AnyTypeEnum::StructType(t) => BasicMetadataTypeEnum::StructType(t),
+                    AnyTypeEnum::VectorType(t) => BasicMetadataTypeEnum::VectorType(t),
+                    AnyTypeEnum::VoidType(_) => panic!("Void type cannot be param."),
+                }
+            } else {
+                panic!("Param type ({}) not defined!", param_type);
+            }
+        }).collect::<Vec<BasicMetadataTypeEnum>>();
+
+        // 戻り値の型を参照
+        if let Some(&return_type) = self.types.get(&String::from(return_type)) {
+
+            let fn_type = match return_type {
+                AnyTypeEnum::ArrayType(t) => t.fn_type(param_types, false),
+                AnyTypeEnum::FloatType(t) => t.fn_type(param_types, false),
+                AnyTypeEnum::FunctionType(_) => panic!("Function type cannot be returned."),
+                AnyTypeEnum::IntType(t) => t.fn_type(param_types, false),
+                AnyTypeEnum::PointerType(t) => t.fn_type(param_types, false),
+                AnyTypeEnum::StructType(t) => t.fn_type(param_types, false),
+                AnyTypeEnum::VectorType(t) => t.fn_type(param_types, false),
+                AnyTypeEnum::VoidType(t) => t.fn_type(param_types, false),
+            };
+            if let Some(module) = &self.module {
+                let func = module.add_function(name, fn_type, None);
+
+                let basic_block = self.context.append_basic_block(func, name);
+                self.builder.position_at_end(basic_block);
+
+                self.stack.push(func);
+            }
+            else
+            {
+                panic!("Failed to craete function ({}). There is no Module yet. Create module first.", name);
+            }
+        }
+        else {
+            panic!("Return type ({}) not defined!", return_type);
+        }
     }
 
     /// 関数を作成(宣言のみ)
@@ -103,11 +148,44 @@ impl<'ctx> Compiler<'ctx>{
 
     }
 
+    /// return文を作成
+    fn create_return(&self, value: &Option<BasicValueEnum>) {
+        if let Some(value) = value {
+            self.builder.build_return(Some(value));
+        } else{
+            self.builder.build_return(None);
+        }
+    }
+
+    /// if式を作成
+    /// (condition_bool) ? (then_value) : (else_value)
+    fn create_if(&self, condition_bool: IntValue, then_value: &BasicValueEnum, else_value: &BasicValueEnum) -> BasicValueEnum {
+        let zero_const = self.context.i8_type().const_zero();
+        let condition = self
+                    .builder
+                    .build_int_compare(IntPredicate::NE, condition_bool, zero_const, "ifcond");
+        
+        let parent = self.stack.last().unwrap_or_else(||panic!("No function found!"));
+
+        let then_block = self.context.append_basic_block(*parent, "then");
+        let else_block = self.context.append_basic_block(*parent, "else");
+        let cont_block = self.context.append_basic_block(*parent, "ifcont");
+
+        self.builder.build_conditional_branch(condition, then_block, else_block);
+
+        // build then block
+        self.builder.position_at_end(then_block);
+        self.builder.build_unconditional_branch(cont_block);
+        let then_bb = self.builder.get_insert_block().unwrap();
+
+        return todo!();
+    }
+
 }
 
 
 /// 意味解析関連関数 (ASTを解析して対応する関連関数にIRを書かせる)
-impl<'ctx> Compiler<'ctx>{
+impl<'a> Compiler<'a>{
 
 }
 
@@ -126,6 +204,7 @@ fn main() {
     println!("======== LLVM IR ========");
     println!("{}", compiler.emit_as_text().unwrap());
     println!("========== END ==========");
+    println!("{:?}", compiler.emit_as_text().unwrap());
 }
 
 
@@ -138,6 +217,23 @@ fn basic_function_declaration_test()
     compiler.init_primitive_types();
     compiler.create_module("main");
     compiler.create_function_declare("main", "i32", vec![]);
+    compiler.create_return(&None);
 
     assert_eq!(compiler.emit_as_text().unwrap(), "; ModuleID = 'main'\nsource_filename = \"main\"\n\ndeclare i32 @main()\n")
+}
+
+#[test]
+fn return_test()
+{
+    let mut context = Context::create();
+    let mut compiler = Compiler::new(&mut context);
+
+    compiler.init_primitive_types();
+    compiler.create_module("main");
+    compiler.create_function("main", "i32", vec![]);
+    compiler.create_return(&None);
+
+    println!("{:?}", compiler.emit_as_text());
+
+    assert_eq!(compiler.emit_as_text().unwrap(), "; ModuleID = 'main'\nsource_filename = \"main\"\n\ndefine i32 @main() {\nmain:\n  ret void\n}\n")
 }
