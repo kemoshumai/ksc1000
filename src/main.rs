@@ -4,7 +4,7 @@ use std::{env, collections::HashMap, mem::discriminant};
 /// コンパイラ構造体
 struct Compiler<'a>{
     context: &'a Context,
-    builder: Builder<'a>,
+    builder: &'a Builder<'a>,
     module: Option<Module<'a>>,
     types: HashMap<String, AnyTypeEnum<'a>>,
     stack: Vec<FunctionValue<'a>>
@@ -13,10 +13,10 @@ struct Compiler<'a>{
 /// コンパイル関連関数 (実際にIRを書く)
 impl<'a> Compiler<'a>{
 
-    fn new(context: &'a Context) -> Compiler<'a>{
+    fn new(context: &'a Context, builder: &'a Builder) -> Compiler<'a>{
         return Compiler{
             context,
-            builder: context.create_builder(),
+            builder,
             module: None,
             types: HashMap::new(),
             stack: vec![]
@@ -188,8 +188,7 @@ impl<'a> Compiler<'a>{
     }
 
     /// if式を作成(マージ)
-    /// TODO: phiの値を戻り値で返す。
-    fn merge_if_branch(&self, then_value: &BasicValueEnum, else_value: &BasicValueEnum, then_block: BasicBlock, else_block: BasicBlock, cont_block: BasicBlock) {
+    fn merge_if_branch(&self, then_value: &'a BasicValueEnum, else_value: &BasicValueEnum, then_block: BasicBlock, else_block: BasicBlock, cont_block: BasicBlock) -> BasicValueEnum{
         self.builder.position_at_end(cont_block);
         if discriminant(then_value) != discriminant(else_value) {
             panic!("The return value on then and the return value on else have different types.");
@@ -197,6 +196,7 @@ impl<'a> Compiler<'a>{
         // phiはthen_valueの型と等しくなるが、そもそもelseとthenで型があってない場合エラーを吐かせているので、elseでも同じ結果になる。
         let phi = self.builder.build_phi(then_value.get_type(), "iftmp");
         phi.add_incoming(&[(then_value, then_block), (else_value, else_block)]);
+        return phi.as_basic_value();
     }
 
 }
@@ -212,8 +212,9 @@ fn main() {
     env::set_var("RUST_LOG", "debug");
     env_logger::init();
 
-    let mut context = Context::create();
-    let mut compiler = Compiler::new(&mut context);
+    let context = Context::create();
+    let builder = context.create_builder();
+    let mut compiler = Compiler::new(&context,&builder);
 
     compiler.init_primitive_types();
     compiler.create_module("main");
@@ -229,8 +230,9 @@ fn main() {
 #[test]
 fn basic_function_declaration_test()
 {
-    let mut context = Context::create();
-    let mut compiler = Compiler::new(&mut context);
+    let context = Context::create();
+    let builder = context.create_builder();
+    let mut compiler = Compiler::new(&context,&builder);
 
     compiler.init_primitive_types();
     compiler.create_module("main");
@@ -243,8 +245,9 @@ fn basic_function_declaration_test()
 #[test]
 fn return_test()
 {
-    let mut context = Context::create();
-    let mut compiler = Compiler::new(&mut context);
+    let context = Context::create();
+    let builder = context.create_builder();
+    let mut compiler = Compiler::new(&context,&builder);
 
     compiler.init_primitive_types();
     compiler.create_module("main");
