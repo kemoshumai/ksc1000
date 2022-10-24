@@ -361,15 +361,14 @@ impl<'a, 'ctx> Compiler<'a, 'ctx>{
 
 
     /// 関数呼び出し
-    fn create_function_call(&self, name: &str, args: &'a Vec<BasicValueEnum>) -> BasicValueEnum{
+    fn create_function_call(&self, name: &str, args: &'a Vec<BasicValueEnum>) -> Option<BasicValueEnum>{
         if self.stack_function.contains(&name) == false{
             panic!("Functionn {} not found!", name);
         }
         if let Some(module) = &self.module {
-            let func = module.get_function(name).unwrap_or_else(||panic!("Functionn {} not found!", name));
+            let func = module.get_function(name).unwrap_or_else(||panic!("Function {} not found!", name));
             let argsv: Vec<BasicMetadataValueEnum> = args.iter().by_ref().map(|&val| val.into()).collect();
-            return self.builder.build_call(func, &argsv, name).try_as_basic_value().left()
-                        .unwrap_or_else(||panic!("Invalid call produced."));
+            return self.builder.build_call(func, &argsv, name).try_as_basic_value().left();
         }else{
             panic!("There is no Module yet. Create module first.");
         }
@@ -393,6 +392,7 @@ fn main() {
 
     compiler.init_primitive_types();
     compiler.create_module("main");
+    compiler.create_function_declare("printNumber", "void", &vec!["Number"]);
     compiler.create_function("gcd", "Number", &vec!["Number", "Number"], &vec!["a","b"]);
     let left = compiler.get_variable("b");
     let right = compiler.create_constant_number("Number", 0.0);
@@ -405,10 +405,17 @@ fn main() {
     let a = compiler.get_variable("a");
     let b = compiler.get_variable("b");
     let args = vec![b, compiler.create_binnary_operator(BinaryOperator::REM, &a, &b), ];
-    let else_val = compiler.create_function_call("gcd", &args);
+    let else_val = compiler.create_function_call("gcd", &args).unwrap();
     compiler.end_if_branch(&cont_block);
     let ret = compiler.merge_if_branch(&then_val, &else_val, then_block, else_block, cont_block, "Number");
     compiler.create_return(&Some(ret));
+    compiler.create_function("main", "i32", &vec![], &vec![]);
+    let a = compiler.create_constant_number("Number", 12.0);
+    let b = compiler.create_constant_number("Number", 18.0);
+    let args = vec![a,b];
+    let ret = compiler.create_function_call("gcd", &args).unwrap();
+    compiler.create_function_call("printNumber", &vec![ret]);
+    compiler.create_return(&Some(compiler.create_constant_number("i32", 0.0)));
 
     println!("======== LLVM IR ========");
     println!("{}", compiler.emit_as_text().unwrap());
