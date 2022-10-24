@@ -11,23 +11,24 @@ enum Predicate{
 }
 
 enum BinaryOperator{
-    ADD,SUB,MUL,DIV
+    ADD,SUB,MUL,DIV,
+    REM
 }
 
 /// コンパイラ構造体
-struct Compiler<'a>{
-    context: &'a Context,
-    builder: &'a Builder<'a>,
-    module: Option<Module<'a>>,
-    types: HashMap<String, AnyTypeEnum<'a>>,
+struct Compiler<'a, 'ctx>{
+    context: &'ctx Context,
+    builder: &'a Builder<'ctx>,
+    module: Option<Module<'ctx>>,
+    types: HashMap<String, AnyTypeEnum<'ctx>>,
     stack_function: Vec<&'a str>,
-    stack: HashMap<&'a str, PointerValue<'a>>
+    stack: HashMap<&'a str, PointerValue<'ctx>>
 }
 
 /// コンパイル関連関数 (実際にIRを書く)
-impl<'a> Compiler<'a>{
+impl<'a, 'ctx> Compiler<'a, 'ctx>{
 
-    fn new(context: &'a Context, builder: &'a Builder) -> Compiler<'a>{
+    fn new (context: &'a Context, builder: &'a Builder) -> Compiler<'a, 'ctx> where 'a: 'ctx{
         return Compiler{
             context,
             builder,
@@ -331,7 +332,8 @@ impl<'a> Compiler<'a>{
                         BinaryOperator::ADD => self.builder.build_int_add(*left, *right, "add"),
                         BinaryOperator::SUB => self.builder.build_int_sub(*left, *right, "sub"),
                         BinaryOperator::MUL => self.builder.build_int_mul(*left, *right, "mul"),
-                        BinaryOperator::DIV => self.builder.build_int_signed_div(*left, *right, "div")
+                        BinaryOperator::DIV => self.builder.build_int_signed_div(*left, *right, "div"),
+                        BinaryOperator::REM => self.builder.build_int_signed_rem(*left, *right, "rem"),
                     } )
                 }else{
                     panic!("The left value and the right value have different types.");
@@ -343,7 +345,8 @@ impl<'a> Compiler<'a>{
                         BinaryOperator::ADD => self.builder.build_float_add(*left, *right, "add"),
                         BinaryOperator::SUB => self.builder.build_float_sub(*left, *right, "sub"),
                         BinaryOperator::MUL => self.builder.build_float_mul(*left, *right, "mul"),
-                        BinaryOperator::DIV => self.builder.build_float_div(*left, *right, "div")
+                        BinaryOperator::DIV => self.builder.build_float_div(*left, *right, "div"),
+                        BinaryOperator::REM => self.builder.build_float_rem(*left, *right, "rem"),
                     } )
                 }else{
                     panic!("The left value and the right value have different types.");
@@ -375,7 +378,7 @@ impl<'a> Compiler<'a>{
 
 
 /// 意味解析関連関数 (ASTを解析して対応する関連関数にIRを書かせる)
-impl<'a> Compiler<'a>{
+impl<'a, 'ctx> Compiler<'a, 'ctx>{
 
 }
 
@@ -401,10 +404,10 @@ fn main() {
     compiler.start_if_branch(&else_block);
     let a = compiler.get_variable("a");
     let b = compiler.get_variable("b");
-    let args = vec![compiler.create_binnary_operator(BinaryOperator::DIV, &a, &b)];
+    let args = vec![b, compiler.create_binnary_operator(BinaryOperator::REM, &a, &b), ];
     let else_val = compiler.create_function_call("gcd", &args);
     compiler.end_if_branch(&cont_block);
-    let ret = compiler.merge_if_branch(&then_val, &else_val, then_block, else_block, cont_block, "bool");
+    let ret = compiler.merge_if_branch(&then_val, &else_val, then_block, else_block, cont_block, "Number");
     compiler.create_return(&Some(ret));
 
     println!("======== LLVM IR ========");
