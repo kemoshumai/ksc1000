@@ -10,6 +10,10 @@ enum Predicate{
     LESS_THAN_OR_EQUAL,
 }
 
+enum BinaryOperator{
+    ADD,SUB,MUL,DIV
+}
+
 /// コンパイラ構造体
 struct Compiler<'a>{
     context: &'a Context,
@@ -312,6 +316,44 @@ impl<'a> Compiler<'a>{
         } else {
             panic!("Param type ({}) not defined!", type_name);
         }
+    }
+
+    /// 二項演算子
+    fn create_binnary_operator(&self, op: BinaryOperator, left: &'a BasicValueEnum, right: &'a BasicValueEnum) -> BasicValueEnum{
+        if discriminant(left) != discriminant(right) {
+            panic!("The left value and the right value have different types.");
+        }
+        let ret:BasicValueEnum = match left{
+            BasicValueEnum::ArrayValue(_) => panic!("Four arithmetic operations are not possible with ArrayValue."),
+            BasicValueEnum::IntValue(left) => {
+                if let BasicValueEnum::IntValue(right) = right {
+                    BasicValueEnum::IntValue( match op {
+                        BinaryOperator::ADD => self.builder.build_int_add(*left, *right, "add"),
+                        BinaryOperator::SUB => self.builder.build_int_sub(*left, *right, "sub"),
+                        BinaryOperator::MUL => self.builder.build_int_mul(*left, *right, "mul"),
+                        BinaryOperator::DIV => self.builder.build_int_signed_div(*left, *right, "div")
+                    } )
+                }else{
+                    panic!("The left value and the right value have different types.");
+                }
+            },
+            BasicValueEnum::FloatValue(left) => {
+                if let BasicValueEnum::FloatValue(right) = right {
+                    BasicValueEnum::FloatValue( match op {
+                        BinaryOperator::ADD => self.builder.build_float_add(*left, *right, "add"),
+                        BinaryOperator::SUB => self.builder.build_float_sub(*left, *right, "sub"),
+                        BinaryOperator::MUL => self.builder.build_float_mul(*left, *right, "mul"),
+                        BinaryOperator::DIV => self.builder.build_float_div(*left, *right, "div")
+                    } )
+                }else{
+                    panic!("The left value and the right value have different types.");
+                }
+            },
+            BasicValueEnum::PointerValue(_) => panic!("Four arithmetic operations are not possible with PointerValue."),
+            BasicValueEnum::StructValue(_) => panic!("Four arithmetic operations are not possible with StructValue."),
+            BasicValueEnum::VectorValue(_) => panic!("Four arithmetic operations are not possible with VectorValue."),
+        };
+        return ret;
     }
 }
 
