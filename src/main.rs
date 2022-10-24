@@ -1,5 +1,14 @@
-use inkwell::{context::Context, builder::Builder, module::Module, types::{AnyTypeEnum, BasicMetadataTypeEnum}, values::{FunctionValue, BasicValue, AnyValue, BasicValueEnum, IntValue, AnyValueEnum, PointerValue}, IntPredicate, basic_block::BasicBlock};
+use inkwell::{context::Context, builder::Builder, module::Module, types::{AnyTypeEnum, BasicMetadataTypeEnum, BasicTypeEnum}, values::{FunctionValue, BasicValue, AnyValue, BasicValueEnum, IntValue, AnyValueEnum, PointerValue}, IntPredicate, basic_block::BasicBlock, FloatPredicate};
 use std::{env, collections::HashMap, mem::discriminant};
+
+enum Predicate{
+    EQUAL,
+    NOT_EQUAL,
+    GREATER_THAN,
+    GREATER_THAN_OR_EQUAL,
+    LESS_THAN,
+    LESS_THAN_OR_EQUAL,
+}
 
 /// コンパイラ構造体
 struct Compiler<'a>{
@@ -40,6 +49,9 @@ impl<'a> Compiler<'a>{
 
         // i32 -> i32
         self.types.insert(String::from("i32"), AnyTypeEnum::IntType(self.context.i32_type()));
+        
+        // bool -> i1
+        self.types.insert(String::from("bool"), AnyTypeEnum::IntType(self.context.custom_width_int_type(1)));
         
         // void -> void
         self.types.insert(String::from("void"), AnyTypeEnum::VoidType(self.context.void_type()));
@@ -171,7 +183,7 @@ impl<'a> Compiler<'a>{
     /// if式を作成(分岐側)
     /// (condition_bool) ? (then_value) : (else_value)
     fn create_if_branch(&self, condition_bool: IntValue) -> (BasicBlock, BasicBlock, BasicBlock) {
-        let zero_const = self.context.i8_type().const_zero();
+        let zero_const = self.context.custom_width_int_type(1).const_zero();
         let condition = self
                     .builder
                     .build_int_compare(IntPredicate::NE, condition_bool, zero_const, "ifcond");
@@ -203,17 +215,104 @@ impl<'a> Compiler<'a>{
     }
 
     /// if式を作成(マージ)
-    fn merge_if_branch(&self, then_value: &'a BasicValueEnum, else_value: &BasicValueEnum, then_block: BasicBlock, else_block: BasicBlock, cont_block: BasicBlock) -> BasicValueEnum{
+    fn merge_if_branch(&self, then_value: &BasicValueEnum, else_value: &BasicValueEnum, then_block: BasicBlock, else_block: BasicBlock, cont_block: BasicBlock, typename:&str) -> BasicValueEnum{
         self.builder.position_at_end(cont_block);
         if discriminant(then_value) != discriminant(else_value) {
             panic!("The return value on then and the return value on else have different types.");
         }
-        // phiはthen_valueの型と等しくなるが、そもそもelseとthenで型があってない場合エラーを吐かせているので、elseでも同じ結果になる。
-        let phi = self.builder.build_phi(then_value.get_type(), "iftmp");
-        phi.add_incoming(&[(then_value, then_block), (else_value, else_block)]);
-        return phi.as_basic_value();
+        if let Some(&rettype) = self.types.get(&String::from(typename)) {
+            let rettype = match rettype {
+                AnyTypeEnum::ArrayType(t) => BasicTypeEnum::ArrayType(t),
+                AnyTypeEnum::FloatType(t) => BasicTypeEnum::FloatType(t),
+                AnyTypeEnum::FunctionType(_) => panic!("Function type cannot be param."),
+                AnyTypeEnum::IntType(t) => BasicTypeEnum::IntType(t),
+                AnyTypeEnum::PointerType(t) => BasicTypeEnum::PointerType(t),
+                AnyTypeEnum::StructType(t) => BasicTypeEnum::StructType(t),
+                AnyTypeEnum::VectorType(t) => BasicTypeEnum::VectorType(t),
+                AnyTypeEnum::VoidType(_) => panic!("Void type cannot be param."),
+            };
+            let phi = self.builder.build_phi(rettype, "iftmp");
+            phi.add_incoming(&[(then_value, then_block), (else_value, else_block)]);
+            return phi.as_basic_value();
+        }else{
+            panic!("")
+        }
     }
 
+    /// 変数を参照
+    fn get_variable(&self, name: &str) -> BasicValueEnum {
+        return self.builder.build_load(
+            *self.stack.get(name)
+                .unwrap_or_else(||panic!("Variable {} is not declared",name)), name);
+        
+    }
+
+    /// 比較演算子
+    fn create_comparison_operator(&self, op:Predicate ,left: BasicValueEnum, right: BasicValueEnum) -> IntValue {
+        if discriminant(&left) != discriminant(&right) {
+            panic!("The left value and the right value have different types.");
+        }
+        let condition = match left {
+            BasicValueEnum::ArrayValue(_) => panic!("ArrayValue is not comparable."),
+            BasicValueEnum::IntValue(_) => {
+                let op = match op {
+                    Predicate::EQUAL => IntPredicate::EQ,
+                    Predicate::NOT_EQUAL => IntPredicate::NE,
+                    Predicate::GREATER_THAN => IntPredicate::SGT,
+                    Predicate::GREATER_THAN_OR_EQUAL => IntPredicate::SGE,
+                    Predicate::LESS_THAN => IntPredicate::SLT,
+                    Predicate::LESS_THAN_OR_EQUAL => IntPredicate::SLE,
+                };
+                if let (BasicValueEnum::IntValue(left), BasicValueEnum::IntValue(right)) = (left,right) {
+                    self.builder.build_int_compare(op, left, right, "compared")
+                } else{
+                    panic!("The left value and the right value have different types.")
+                }
+            },
+            BasicValueEnum::FloatValue(_) => {
+                let op = match op {
+                    Predicate::EQUAL => FloatPredicate::OEQ,
+                    Predicate::NOT_EQUAL => FloatPredicate::ONE,
+                    Predicate::GREATER_THAN => FloatPredicate::OGT,
+                    Predicate::GREATER_THAN_OR_EQUAL => FloatPredicate::OGE,
+                    Predicate::LESS_THAN => FloatPredicate::OLT,
+                    Predicate::LESS_THAN_OR_EQUAL => FloatPredicate::OLE,
+                };
+                if let (BasicValueEnum::FloatValue(left), BasicValueEnum::FloatValue(right)) = (left,right) {
+                    self.builder.build_float_compare(op, left, right, "compared")
+                } else{
+                    panic!("The left value and the right value have different types.")
+                }
+            },
+            BasicValueEnum::PointerValue(_) => panic!("PointerValue is not comparable."),
+            BasicValueEnum::StructValue(_) => panic!("StructValue is not comparable."),
+            BasicValueEnum::VectorValue(_) => panic!("VectorValue is not comparable."),
+        };
+        let pointer = self.builder.build_alloca(self.context.custom_width_int_type(1), "compared_val");
+        self.builder.build_store(pointer, condition);
+        if let BasicValueEnum::IntValue(v) = self.builder.build_load(pointer,"") {
+            return v;
+        }else{panic!("Could not assign the comparison result to a variable with the correct type.")}
+    }
+
+    /// 定数
+    /// TODO: 符号がマイナスな整数にも対応
+    fn create_constant_number(&self,type_name: &str, number: f64) -> BasicValueEnum<'a> {
+        if let Some(&constant_type) = self.types.get(&type_name.to_string()) {
+            return match constant_type {
+                AnyTypeEnum::ArrayType(_) => panic!("Constants of type ArrayType cannot be declared!"),
+                AnyTypeEnum::FloatType(floattype) => BasicValueEnum::FloatValue(floattype.const_float(number)),
+                AnyTypeEnum::FunctionType(_) => panic!("Constants of type ArrayType cannot be declared!"),
+                AnyTypeEnum::IntType(inttype) => BasicValueEnum::IntValue(inttype.const_int(number.round() as u64,false)),
+                AnyTypeEnum::PointerType(_) => panic!("Constants of type ArrayType cannot be declared!"),
+                AnyTypeEnum::StructType(_) => panic!("Constants of type ArrayType cannot be declared!"),
+                AnyTypeEnum::VectorType(_) => panic!("Constants of type ArrayType cannot be declared!"),
+                AnyTypeEnum::VoidType(_) => panic!("Constants of type ArrayType cannot be declared!"),
+            }
+        } else {
+            panic!("Param type ({}) not defined!", type_name);
+        }
+    }
 }
 
 
@@ -233,7 +332,19 @@ fn main() {
 
     compiler.init_primitive_types();
     compiler.create_module("main");
-    compiler.create_function("gcd", "Number", &vec!["Number", "Number"], &vec!["a","b"]);
+    compiler.create_function("gcd", "bool", &vec!["i32", "i32"], &vec!["a","b"]);
+    let left = compiler.get_variable("a");
+    let right = compiler.get_variable("b");
+    let ans = compiler.create_comparison_operator(Predicate::EQUAL, left, right);
+    let (then_block, else_block, cont_block) = compiler.create_if_branch(ans);
+    compiler.start_if_branch(&then_block);
+    let then_val = compiler.create_constant_number("bool", 1.0);
+    compiler.end_if_branch(&cont_block);
+    compiler.start_if_branch(&else_block);
+    let else_val = compiler.create_constant_number("bool", 0.0);
+    compiler.end_if_branch(&cont_block);
+    let ret = compiler.merge_if_branch(&then_val, &else_val, then_block, else_block, cont_block, "bool");
+    compiler.create_return(&Some(ret));
 
     println!("======== LLVM IR ========");
     println!("{}", compiler.emit_as_text().unwrap());
@@ -269,7 +380,31 @@ fn return_test()
     compiler.create_function("main", "i32", &vec![],&vec![]);
     compiler.create_return(&None);
 
-    println!("{:?}", compiler.emit_as_text());
-
     assert_eq!(compiler.emit_as_text().unwrap(), "; ModuleID = 'main'\nsource_filename = \"main\"\n\ndefine i32 @main() {\nmain:\n  ret void\n}\n")
+}
+
+#[test]
+fn if_test()
+{
+    let context = Context::create();
+    let builder = context.create_builder();
+    let mut compiler = Compiler::new(&context,&builder);
+
+    compiler.init_primitive_types();
+    compiler.create_module("main");
+    compiler.create_function("test", "bool", &vec!["i32", "i32"], &vec!["a","b"]);
+    let left = compiler.get_variable("a");
+    let right = compiler.get_variable("b");
+    let ans = compiler.create_comparison_operator(Predicate::EQUAL, left, right);
+    let (then_block, else_block, cont_block) = compiler.create_if_branch(ans);
+    compiler.start_if_branch(&then_block);
+    let then_val = compiler.create_constant_number("bool", 1.0);
+    compiler.end_if_branch(&cont_block);
+    compiler.start_if_branch(&else_block);
+    let else_val = compiler.create_constant_number("bool", 0.0);
+    compiler.end_if_branch(&cont_block);
+    let ret = compiler.merge_if_branch(&then_val, &else_val, then_block, else_block, cont_block, "bool");
+    compiler.create_return(&Some(ret));
+
+    assert_eq!(compiler.emit_as_text().unwrap(), "; ModuleID = 'main'\nsource_filename = \"main\"\n\ndefine i1 @test(i32 %0, i32 %1) {\ntest:\n  %a = alloca i32\n  store i32 %0, i32* %a\n  %b = alloca i32\n  store i32 %1, i32* %b\n  %a1 = load i32, i32* %a\n  %b2 = load i32, i32* %b\n  %compared = icmp eq i32 %a1, %b2\n  %compared_val = alloca i1\n  store i1 %compared, i1* %compared_val\n  %2 = load i1, i1* %compared_val\n  %ifcond = icmp ne i1 %2, false\n  br i1 %ifcond, label %then, label %else\n\nthen:                                             ; preds = %test\n  br label %ifcont\n\nelse:                                             ; preds = %test\n  br label %ifcont\n\nifcont:                                           ; preds = %else, %then\n  %iftmp = phi i1 [ true, %then ], [ false, %else ]\n  ret i1 %iftmp\n}\n")
 }
