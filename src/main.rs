@@ -1,4 +1,4 @@
-use inkwell::{context::Context, builder::Builder, module::Module, types::{AnyTypeEnum, BasicMetadataTypeEnum, BasicTypeEnum}, values::{FunctionValue, BasicValue, AnyValue, BasicValueEnum, IntValue, AnyValueEnum, PointerValue}, IntPredicate, basic_block::BasicBlock, FloatPredicate};
+use inkwell::{context::Context, builder::Builder, module::Module, types::{AnyTypeEnum, BasicMetadataTypeEnum, BasicTypeEnum}, values::{FunctionValue, BasicValue, AnyValue, BasicValueEnum, IntValue, AnyValueEnum, PointerValue, BasicMetadataValueEnum}, IntPredicate, basic_block::BasicBlock, FloatPredicate};
 use std::{env, collections::HashMap, mem::discriminant};
 
 enum Predicate{
@@ -118,7 +118,7 @@ impl<'a> Compiler<'a>{
             }
             else
             {
-                panic!("Failed to craete function ({}). There is no Module yet. Create module first.", name);
+                panic!("Failed to create function ({}). There is no Module yet. Create module first.", name);
             }
         }
         else {
@@ -355,6 +355,22 @@ impl<'a> Compiler<'a>{
         };
         return ret;
     }
+
+
+    /// 関数呼び出し
+    fn create_function_call(&self, name: &str, args: &'a Vec<BasicValueEnum>) -> BasicValueEnum{
+        if self.stack_function.contains(&name) == false{
+            panic!("Functionn {} not found!", name);
+        }
+        if let Some(module) = &self.module {
+            let func = module.get_function(name).unwrap_or_else(||panic!("Functionn {} not found!", name));
+            let argsv: Vec<BasicMetadataValueEnum> = args.iter().by_ref().map(|&val| val.into()).collect();
+            return self.builder.build_call(func, &argsv, name).try_as_basic_value().left()
+                        .unwrap_or_else(||panic!("Invalid call produced."));
+        }else{
+            panic!("There is no Module yet. Create module first.");
+        }
+    }
 }
 
 
@@ -374,16 +390,19 @@ fn main() {
 
     compiler.init_primitive_types();
     compiler.create_module("main");
-    compiler.create_function("gcd", "bool", &vec!["i32", "i32"], &vec!["a","b"]);
-    let left = compiler.get_variable("a");
-    let right = compiler.get_variable("b");
+    compiler.create_function("gcd", "Number", &vec!["Number", "Number"], &vec!["a","b"]);
+    let left = compiler.get_variable("b");
+    let right = compiler.create_constant_number("Number", 0.0);
     let ans = compiler.create_comparison_operator(Predicate::EQUAL, left, right);
     let (then_block, else_block, cont_block) = compiler.create_if_branch(ans);
     compiler.start_if_branch(&then_block);
-    let then_val = compiler.create_constant_number("bool", 1.0);
+    let then_val = compiler.get_variable("a");
     compiler.end_if_branch(&cont_block);
     compiler.start_if_branch(&else_block);
-    let else_val = compiler.create_constant_number("bool", 0.0);
+    let a = compiler.get_variable("a");
+    let b = compiler.get_variable("b");
+    let args = vec![compiler.create_binnary_operator(BinaryOperator::DIV, &a, &b)];
+    let else_val = compiler.create_function_call("gcd", &args);
     compiler.end_if_branch(&cont_block);
     let ret = compiler.merge_if_branch(&then_val, &else_val, then_block, else_block, cont_block, "bool");
     compiler.create_return(&Some(ret));
