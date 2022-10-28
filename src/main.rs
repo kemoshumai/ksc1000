@@ -1,5 +1,8 @@
 use inkwell::{context::Context, builder::Builder, module::Module, types::{AnyTypeEnum, BasicMetadataTypeEnum, BasicTypeEnum}, values::{FunctionValue, BasicValue, AnyValue, BasicValueEnum, IntValue, AnyValueEnum, PointerValue, BasicMetadataValueEnum}, IntPredicate, basic_block::BasicBlock, FloatPredicate};
 use std::{env, collections::HashMap, mem::discriminant};
+use std::fs::File;
+use std::io::Result;
+use std::io::prelude::*;
 
 enum Predicate{
     EQUAL,
@@ -421,6 +424,10 @@ fn main() {
     println!("{}", compiler.emit_as_text().unwrap());
     println!("========== END ==========");
     println!("{:?}", compiler.emit_as_text().unwrap());
+
+    let filename = "./compiling/ksc.ll";
+    let mut file = File::create(filename).unwrap();
+    file.write_all(compiler.emit_as_text().unwrap().as_bytes()).unwrap();
 }
 
 
