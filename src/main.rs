@@ -366,7 +366,7 @@ impl<'a, 'ctx> Compiler<'a, 'ctx>{
     /// 関数呼び出し
     fn create_function_call(&self, name: &str, args: &'a Vec<BasicValueEnum>) -> Option<BasicValueEnum>{
         if self.stack_function.contains(&name) == false{
-            panic!("Functionn {} not found!", name);
+            panic!("Function {} not found!", name);
         }
         if let Some(module) = &self.module {
             let func = module.get_function(name).unwrap_or_else(||panic!("Function {} not found!", name));
@@ -425,7 +425,7 @@ fn main() {
     println!("========== END ==========");
     println!("{:?}", compiler.emit_as_text().unwrap());
 
-    let filename = "./compiling/ksc.ll";
+    let filename = "./compiled/ksc.ll";
     let mut file = File::create(filename).unwrap();
     file.write_all(compiler.emit_as_text().unwrap().as_bytes()).unwrap();
 }
