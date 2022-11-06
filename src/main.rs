@@ -479,16 +479,20 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> where 'a: 'ctx{
                 let param_types: Vec<&str> = param_types.iter().map(|s| &**s).collect();
                 let param_names: Vec<&str> = param_names.iter().map(|s| &**s).collect();
                 let func = self.create_function(name.as_str(), return_type.as_str(), &param_types, &param_names);
-                let val = KSCValue{
-                    valuetype: KSCType { name: return_type.to_string(), reference: func.get_type().as_any_type_enum() },
+                let func_KSCValue = KSCValue{
+                    valuetype: KSCType { name: "Function".to_string(), reference: func.get_type().as_any_type_enum() },
                     value: func.as_any_value_enum(),
                 };
-                return val;
+                return func_KSCValue;
             },
             Expression::VariableDeclaration { typename, name, mutable, value } => {
                 let executed = self.compile_expression( &*value );
-                let vartype = self.get_ksctype_from_name(typename.as_str())
-                                    .unwrap_or_else(||panic!("Type '{typename}' is not found!'"));
+                let vartype = if executed.valuetype.name == "Function" {
+                    &executed.valuetype
+                } else {
+                    self.get_ksctype_from_name(typename.as_str())
+                                    .unwrap_or_else(||panic!("Type '{typename}' is not found!'"))
+                };
                 if vartype.name != executed.valuetype.name {
                     panic!("Cannot be assigned because the type is different. '{}' <= {}", vartype.name, executed.valuetype.name);
                 }
