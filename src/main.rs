@@ -1,5 +1,5 @@
 use crypto::{sha2::Sha256, digest::Digest};
-use inkwell::{context::Context, builder::Builder, module::Module, types::{AnyTypeEnum, BasicMetadataTypeEnum, BasicTypeEnum, PointerType, FunctionType}, values::{FunctionValue, BasicValue, AnyValue, BasicValueEnum, IntValue, AnyValueEnum, PointerValue, BasicMetadataValueEnum}, IntPredicate, basic_block::BasicBlock, FloatPredicate, AddressSpace};
+use inkwell::{context::Context, builder::Builder, module::Module, types::{AnyTypeEnum, BasicMetadataTypeEnum, BasicTypeEnum, PointerType, FunctionType, AnyType}, values::{FunctionValue, BasicValue, AnyValue, BasicValueEnum, IntValue, AnyValueEnum, PointerValue, BasicMetadataValueEnum}, IntPredicate, basic_block::BasicBlock, FloatPredicate, AddressSpace};
 use std::{env, collections::HashMap, mem::discriminant, path::PathBuf};
 use std::fs::File;
 use std::io::prelude::*;
@@ -19,20 +19,20 @@ enum BinaryOperator{
     REM
 }
 
-struct KSCType<'a>{
+struct KSCType<'ctx>{
     name: String,
-    reference: AnyTypeEnum<'a>
+    reference: AnyTypeEnum<'ctx>
 }
 
-struct KSCValue<'a>{
-    valuetype: KSCType<'a>,
-    value: AnyValueEnum<'a>
+struct KSCValue<'ctx>{
+    valuetype: KSCType<'ctx>,
+    value: AnyValueEnum<'ctx>
 }
 
 /// スタック(スコープごとに用意する、定義された変数や型を保存するもの。スコープを抜けるとpop)
-struct Stack<'a>{
-    types: Vec<KSCType<'a>>,
-    values: Vec<KSCValue<'a>>
+struct Stack<'ctx>{
+    types: Vec<KSCType<'ctx>>,
+    values: Vec<KSCValue<'ctx>>
 }
 
 /// コンパイラ構造体
@@ -77,7 +77,7 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> where 'a: 'ctx{
             builder,
             module: None,
             stack_function: vec![],
-            stack: vec![]
+            stack: vec![Stack{ types: vec![], values: vec![] }]
         };
     }
 
@@ -429,6 +429,7 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> where 'a: 'ctx{
 enum Expression{
     ///関数
     Function{
+        name: String,
         return_type: String,
         param_types: Vec<String>,
         param_names: Vec<String>,
@@ -470,17 +471,19 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> where 'a: 'ctx{
 
 
     /// 式をコンパイルする
-    fn compile_expression(&mut self, expression: &'a Expression) -> &'a KSCValue<'ctx> where 'a: 'ctx{
+    fn compile_expression(&mut self, expression: &'ctx Expression) -> KSCValue<'ctx> where 'a: 'ctx{
         match expression {
-            Expression::Function { return_type, param_types, param_names, content } => {
-
-                // 型を検証
-                // let param_types_ksctype = param_types.iter().map(|s|self.get_ksctype_from_name(s.as_str()).unwrap_or_else(||panic!("Type '{s}' is not found!"))).collect();
+            Expression::Function { name, return_type, param_types, param_names, content } => {
 
                 // 適当な関数名をつける
-                let functionname = Uuid::new_v4().to_string();
-                // let func = self.create_function(functionname.as_str(), return_type.as_str(), param_types, param_names);
-                return todo!();
+                let param_types: Vec<&str> = param_types.iter().map(|s| &**s).collect();
+                let param_names: Vec<&str> = param_names.iter().map(|s| &**s).collect();
+                let func = self.create_function(name.as_str(), return_type.as_str(), &param_types, &param_names);
+                let val = KSCValue{
+                    valuetype: KSCType { name: return_type.to_string(), reference: func.get_type().as_any_type_enum() },
+                    value: func.as_any_value_enum(),
+                };
+                return val;
             },
             Expression::VariableDeclaration { typename, name, mutable, value } => {
                 let executed = self.compile_expression( &*value );
@@ -506,6 +509,7 @@ fn main() {
             name: "gcd".to_string(),
             mutable: false,
             value: Box::from(Expression::Function {
+                name: "gcd".to_string(),
                 return_type: "Number".to_string(),
                 param_types: vec![
                     "Number".to_string(),
