@@ -89,7 +89,7 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> where 'a: 'ctx{
     }
 
     /// 関数型を取得
-    fn get_function_type(&self, return_type: &'a AnyTypeEnum) -> FunctionType {
+    fn get_function_type(&self, return_type: &'a AnyTypeEnum) -> FunctionType<'ctx> {
         return return_type.into_function_type();
     }
 
@@ -195,7 +195,7 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> where 'a: 'ctx{
     }
 
     /// 関数を作成(宣言のみ)
-    fn create_function_declare(&mut self, name: &'a str, return_type: &AnyTypeEnum<'ctx>, param_types: &Vec<AnyTypeEnum<'ctx>>) -> FunctionValue {
+    fn create_function_declare(&mut self, name: &'a str, return_type: &AnyTypeEnum<'ctx>, param_types: &Vec<AnyTypeEnum<'ctx>>) -> FunctionValue<'ctx> {
 
         // 仮引数の型を参照
         let param_types = &param_types.iter().map(|param_type| {
@@ -244,7 +244,7 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> where 'a: 'ctx{
 
     /// if式を作成(分岐側)
     /// (condition_bool) ? (then_value) : (else_value)
-    fn create_if_branch(&self, condition_bool: IntValue) -> (BasicBlock, BasicBlock, BasicBlock) {
+    fn create_if_branch(&self, condition_bool: IntValue) -> (BasicBlock<'ctx>, BasicBlock<'ctx>, BasicBlock<'ctx>) {
         let zero_const = self.context.custom_width_int_type(1).const_zero();
         let condition = self
                     .builder
@@ -271,13 +271,13 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> where 'a: 'ctx{
     }
 
     /// if式を作成(書き込み終わり)
-    fn end_if_branch(&self, branch: &BasicBlock) -> BasicBlock{
+    fn end_if_branch(&self, branch: &BasicBlock) -> BasicBlock<'ctx>{
         self.builder.build_unconditional_branch(*branch);
         return self.builder.get_insert_block().unwrap();
     }
 
     /// if式を作成(マージ)
-    fn merge_if_branch(&self, then_value: &BasicValueEnum, else_value: &BasicValueEnum, then_block: BasicBlock, else_block: BasicBlock, cont_block: BasicBlock, typename:&'a str) -> BasicValueEnum{
+    fn merge_if_branch(&self, then_value: &BasicValueEnum, else_value: &BasicValueEnum, then_block: BasicBlock, else_block: BasicBlock, cont_block: BasicBlock, typename:&'a str) -> BasicValueEnum<'ctx>{
         self.builder.position_at_end(cont_block);
         if discriminant(then_value) != discriminant(else_value) {
             panic!("The return value on then and the return value on else have different types.");
@@ -302,7 +302,7 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> where 'a: 'ctx{
     }
 
     /// 比較演算子
-    fn create_comparison_operator(&self, op:Predicate ,left: BasicValueEnum, right: BasicValueEnum) -> IntValue {
+    fn create_comparison_operator(&self, op:Predicate ,left: BasicValueEnum, right: BasicValueEnum) -> IntValue<'ctx> {
         if discriminant(&left) != discriminant(&right) {
             panic!("The left value and the right value have different types.");
         }
@@ -351,7 +351,7 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> where 'a: 'ctx{
 
     /// 定数
     /// TODO: 符号がマイナスな整数にも対応
-    fn create_constant_number(&'ctx self,type_name: &'a str, number: f64) -> BasicValueEnum<'a> {
+    fn create_constant_number(&'ctx self,type_name: &'a str, number: f64) -> BasicValueEnum<'ctx> {
         if let Some(constant_type) = self.get_ksctype_from_name(type_name) {
             return match constant_type.reference {
                 AnyTypeEnum::ArrayType(_) => panic!("Constants of type ArrayType cannot be declared!"),
@@ -369,7 +369,7 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> where 'a: 'ctx{
     }
 
     /// 二項演算子
-    fn create_binnary_operator(&self, op: BinaryOperator, left: &'a BasicValueEnum, right: &'a BasicValueEnum) -> BasicValueEnum{
+    fn create_binnary_operator(&self, op: BinaryOperator, left: &'a BasicValueEnum, right: &'a BasicValueEnum) -> BasicValueEnum<'ctx>{
         if discriminant(left) != discriminant(right) {
             panic!("The left value and the right value have different types.");
         }
@@ -410,7 +410,7 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> where 'a: 'ctx{
 
 
     /// 関数呼び出し
-    fn create_function_call(&self, name: &str, args: &'a Vec<BasicValueEnum>) -> Option<BasicValueEnum>{
+    fn create_function_call(&self, name: &str, args: &'a Vec<BasicValueEnum>) -> Option<BasicValueEnum<'ctx>>{
         if self.stack_function.contains(&name) == false{
             panic!("Function {} not found!", name);
         }
