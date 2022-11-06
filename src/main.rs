@@ -33,7 +33,6 @@ struct Compiler<'a, 'ctx>{
     module: Option<Module<'ctx>>,
     types: HashMap<String, AnyTypeEnum<'ctx>>,
     stack_function: Vec<&'a str>,
-    stack: HashMap<&'a str, PointerValue<'ctx>>,
     definedtypes: Vec<KSCType<'ctx>>,
     reftables: HashMap<&'a str, SymbolTable<'ctx>>,
     current_stack_number: i32
@@ -49,7 +48,6 @@ impl<'a, 'ctx> Compiler<'a, 'ctx>{
             module: None,
             types: HashMap::new(),
             stack_function: vec![],
-            stack: HashMap::new(),
             definedtypes: vec![],
             reftables: HashMap::new(),
             current_stack_number: 0
@@ -135,7 +133,6 @@ impl<'a, 'ctx> Compiler<'a, 'ctx>{
                     let param_name = param_names[i];
                     let alloca = self.builder.build_alloca(arg.get_type(), param_name);
                     self.builder.build_store(alloca, arg);
-                    self.stack.insert(param_name, alloca);
                 }
                 return func;
             }
@@ -150,7 +147,7 @@ impl<'a, 'ctx> Compiler<'a, 'ctx>{
     }
 
     /// 関数を作成(宣言のみ)
-    fn create_function_declare(&mut self, name: &'a str, return_type: &AnyTypeEnum, param_types: &Vec<AnyTypeEnum>) -> FunctionValue {
+    fn create_function_declare(&mut self, name: &'a str, return_type: &AnyTypeEnum<'ctx>, param_types: &Vec<AnyTypeEnum<'ctx>>) -> FunctionValue {
 
         // 仮引数の型を参照
         let param_types = &param_types.iter().map(|param_type| {
@@ -254,13 +251,6 @@ impl<'a, 'ctx> Compiler<'a, 'ctx>{
         }else{
             panic!("")
         }
-    }
-
-    /// 変数を参照
-    fn get_variable(&self, name: &str) -> BasicValueEnum {
-        return self.builder.build_load(
-            *self.stack.get(name)
-                .unwrap_or_else(||panic!("Variable {} is not declared",name)), name);
     }
 
     /// 比較演算子
@@ -433,7 +423,7 @@ impl<'a, 'ctx> Compiler<'a, 'ctx>{
     /// ASTを意味解析してLLVMを書く
     fn build(&mut self, program: &'a Vec<Expression>) where 'a: 'ctx{
         self.init_primitive_types();
-        self.create_function_declare("printNumber", "void", &vec!["Number"]);
+        // self.create_function_declare("printNumber", "void", &vec!["Number"]);
 
         for expression in program{
             self.compile_expression(&expression);
@@ -454,11 +444,11 @@ impl<'a, 'ctx> Compiler<'a, 'ctx>{
             Expression::Function { return_type, param_types, param_names, content } => {
 
                 // 型を検証
-                let param_types_ksctype = param_types.iter().map(|s|self.get_ksctype_from_name(s.as_str()).unwrap_or_else(||panic!("Type '{s}' is not found!"))).collect();
+                // let param_types_ksctype = param_types.iter().map(|s|self.get_ksctype_from_name(s.as_str()).unwrap_or_else(||panic!("Type '{s}' is not found!"))).collect();
 
                 // 適当な関数名をつける
                 let functionname = Uuid::new_v4().to_string();
-                let func = self.create_function(functionname.as_str(), return_type.as_str(), param_types, param_names);
+                // let func = self.create_function(functionname.as_str(), return_type.as_str(), param_types, param_names);
                 return todo!();
             },
             Expression::VariableDeclaration { typename, name, mutable, value } => {
