@@ -1,0 +1,8 @@
+# 最大公約数を求めるKSCプログラム
+
+Function gcd = (Number a, Number b) Number => {
+    return b == 0 ? a : gcd(b, a%b);
+}
+
+Number result = gcd(12, 18);
+printNumber(reuslt);
