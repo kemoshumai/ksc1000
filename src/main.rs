@@ -2,7 +2,6 @@ use crypto::{sha2::Sha256, digest::Digest};
 use inkwell::{context::Context, builder::Builder, module::Module, types::{AnyTypeEnum, BasicMetadataTypeEnum, BasicTypeEnum, PointerType, FunctionType}, values::{FunctionValue, BasicValue, AnyValue, BasicValueEnum, IntValue, AnyValueEnum, PointerValue, BasicMetadataValueEnum}, IntPredicate, basic_block::BasicBlock, FloatPredicate, AddressSpace};
 use std::{env, collections::HashMap, mem::discriminant, path::PathBuf};
 use std::fs::File;
-use std::io::Result;
 use std::io::prelude::*;
 use uuid::Uuid;
 
@@ -20,10 +19,20 @@ enum BinaryOperator{
     REM
 }
 
-/// 記号表
-struct SymbolTable<'ctx>{
-    stack_number: i32,
-    kscvalue: &'ctx KSCValue<'ctx>
+struct KSCType<'a>{
+    name: String,
+    reference: AnyTypeEnum<'a>
+}
+
+struct KSCValue<'a>{
+    valuetype: KSCType<'a>,
+    value: AnyValueEnum<'a>
+}
+
+/// スタック(スコープごとに用意する、定義された変数や型を保存するもの。スコープを抜けるとpop)
+struct Stack<'a>{
+    types: Vec<KSCType<'a>>,
+    values: Vec<KSCValue<'a>>
 }
 
 /// コンパイラ構造体
@@ -31,26 +40,44 @@ struct Compiler<'a, 'ctx>{
     context: &'ctx Context,
     builder: &'a Builder<'ctx>,
     module: Option<Module<'ctx>>,
-    types: HashMap<String, AnyTypeEnum<'ctx>>,
     stack_function: Vec<&'a str>,
-    definedtypes: Vec<KSCType<'ctx>>,
-    reftables: HashMap<&'a str, SymbolTable<'ctx>>,
-    current_stack_number: i32
+    stack: Vec<Stack<'ctx>>
+}
+
+/// スタックなど変数や型の管理のための関連関数
+impl<'a, 'ctx> Compiler<'a, 'ctx>{
+
+    /// 新しい型を最新のスタックに登録
+    fn insert_new_type_to_stack(&mut self, ksctype: KSCType<'ctx>) {
+        self.stack.last_mut()
+            .unwrap_or_else(||panic!("There is no stack yet!"))
+            .types
+            .push(ksctype);
+    }
+
+    /// 型名からKSCTypeを検索して返す
+    fn get_ksctype_from_name(&self, name: &'a str) -> Option<&KSCType<'ctx>> where 'a: 'ctx{
+        for scope in &self.stack{
+            let found = scope.types.iter().find(|ksct| ksct.name == name);
+            match found{
+                Some(_) => return found,
+                None => continue,
+            }
+        }
+        return None;
+    }
 }
 
 /// コンパイル関連関数 (実際にIRを書く)
-impl<'a, 'ctx> Compiler<'a, 'ctx>{
+impl<'a, 'ctx> Compiler<'a, 'ctx> where 'a: 'ctx{
 
-    fn new (context: &'a Context, builder: &'a Builder) -> Compiler<'a, 'ctx> where 'a: 'ctx{
+    fn new (context: &'a Context, builder: &'a Builder) -> Compiler<'a, 'ctx>{
         return Compiler{
             context,
             builder,
             module: None,
-            types: HashMap::new(),
             stack_function: vec![],
-            definedtypes: vec![],
-            reftables: HashMap::new(),
-            current_stack_number: 0
+            stack: vec![]
         };
     }
 
@@ -70,16 +97,36 @@ impl<'a, 'ctx> Compiler<'a, 'ctx>{
     fn init_primitive_types(&mut self) {
 
         // Number -> f64
-        self.types.insert(String::from("Number"), AnyTypeEnum::FloatType(self.context.f64_type()));
+        self.insert_new_type_to_stack(
+            KSCType {
+                name: String::from("Number"),
+                reference: AnyTypeEnum::FloatType(self.context.f64_type())
+            }
+        );
 
         // i32 -> i32
-        self.types.insert(String::from("i32"), AnyTypeEnum::IntType(self.context.i32_type()));
+        self.insert_new_type_to_stack(
+            KSCType {
+                name: String::from("i32"),
+                reference: AnyTypeEnum::IntType(self.context.i32_type())
+            }
+        );
         
         // bool -> i1
-        self.types.insert(String::from("bool"), AnyTypeEnum::IntType(self.context.custom_width_int_type(1)));
+        self.insert_new_type_to_stack(
+            KSCType {
+                name: String::from("bool"),
+                reference: AnyTypeEnum::IntType(self.context.custom_width_int_type(1))
+            }
+        );
         
         // void -> void
-        self.types.insert(String::from("void"), AnyTypeEnum::VoidType(self.context.void_type()));
+        self.insert_new_type_to_stack(
+            KSCType {
+                name: String::from("void"),
+                reference: AnyTypeEnum::VoidType(self.context.void_type())
+            }
+        );
 
     }
 
@@ -89,11 +136,13 @@ impl<'a, 'ctx> Compiler<'a, 'ctx>{
     }
 
     /// 関数を作成(宣言してブロックを作成)
-    fn create_function(&mut self, name: &'a str, return_type: &str, param_types: &Vec<&str>, param_names: &Vec<&'a str>) -> FunctionValue {
+    fn create_function(&mut self, name: &'a str, return_type: &'a str, param_types: &Vec<&'a str>, param_names: &Vec<&'a str>) -> FunctionValue<'ctx> {
+        self.stack_function.push(name);
+
         // 仮引数の型を参照
         let param_types = &param_types.iter().map(|param_type| {
-            if let Some(&param_type) = self.types.get(&param_type.to_string()) {
-                return match param_type {
+            if let Some(param_type) = self.get_ksctype_from_name(param_type) {
+                return match param_type.reference {
                     AnyTypeEnum::ArrayType(t) => BasicMetadataTypeEnum::ArrayType(t),
                     AnyTypeEnum::FloatType(t) => BasicMetadataTypeEnum::FloatType(t),
                     AnyTypeEnum::FunctionType(_) => panic!("Function type cannot be param."),
@@ -109,9 +158,9 @@ impl<'a, 'ctx> Compiler<'a, 'ctx>{
         }).collect::<Vec<BasicMetadataTypeEnum>>();
 
         // 戻り値の型を参照
-        if let Some(&return_type) = self.types.get(&String::from(return_type)) {
+        if let Some(return_type) = self.get_ksctype_from_name(&return_type) {
 
-            let fn_type = match return_type {
+            let fn_type = match return_type.reference {
                 AnyTypeEnum::ArrayType(t) => t.fn_type(param_types, false),
                 AnyTypeEnum::FloatType(t) => t.fn_type(param_types, false),
                 AnyTypeEnum::FunctionType(_) => panic!("Function type cannot be returned."),
@@ -122,7 +171,6 @@ impl<'a, 'ctx> Compiler<'a, 'ctx>{
                 AnyTypeEnum::VoidType(t) => t.fn_type(param_types, false),
             };
             if let Some(module) = &self.module {
-                self.stack_function.push(name);
                 let func = module.add_function(name, fn_type, None);
                 let func_bb = self.context.append_basic_block(func, name);
                 self.builder.position_at_end(func_bb);
@@ -229,13 +277,13 @@ impl<'a, 'ctx> Compiler<'a, 'ctx>{
     }
 
     /// if式を作成(マージ)
-    fn merge_if_branch(&self, then_value: &BasicValueEnum, else_value: &BasicValueEnum, then_block: BasicBlock, else_block: BasicBlock, cont_block: BasicBlock, typename:&str) -> BasicValueEnum{
+    fn merge_if_branch(&self, then_value: &BasicValueEnum, else_value: &BasicValueEnum, then_block: BasicBlock, else_block: BasicBlock, cont_block: BasicBlock, typename:&'a str) -> BasicValueEnum{
         self.builder.position_at_end(cont_block);
         if discriminant(then_value) != discriminant(else_value) {
             panic!("The return value on then and the return value on else have different types.");
         }
-        if let Some(&rettype) = self.types.get(&String::from(typename)) {
-            let rettype = match rettype {
+        if let Some(rettype) = self.get_ksctype_from_name(typename) {
+            let rettype = match rettype.reference {
                 AnyTypeEnum::ArrayType(t) => BasicTypeEnum::ArrayType(t),
                 AnyTypeEnum::FloatType(t) => BasicTypeEnum::FloatType(t),
                 AnyTypeEnum::FunctionType(_) => panic!("Function type cannot be param."),
@@ -303,9 +351,9 @@ impl<'a, 'ctx> Compiler<'a, 'ctx>{
 
     /// 定数
     /// TODO: 符号がマイナスな整数にも対応
-    fn create_constant_number(&self,type_name: &str, number: f64) -> BasicValueEnum<'a> {
-        if let Some(&constant_type) = self.types.get(&type_name.to_string()) {
-            return match constant_type {
+    fn create_constant_number(&'ctx self,type_name: &'a str, number: f64) -> BasicValueEnum<'a> {
+        if let Some(constant_type) = self.get_ksctype_from_name(type_name) {
+            return match constant_type.reference {
                 AnyTypeEnum::ArrayType(_) => panic!("Constants of type ArrayType cannot be declared!"),
                 AnyTypeEnum::FloatType(floattype) => BasicValueEnum::FloatValue(floattype.const_float(number)),
                 AnyTypeEnum::FunctionType(_) => panic!("Constants of type ArrayType cannot be declared!"),
@@ -376,16 +424,6 @@ impl<'a, 'ctx> Compiler<'a, 'ctx>{
     }
 }
 
-struct KSCType<'a>{
-    name: String,
-    reference: AnyTypeEnum<'a>
-}
-
-struct KSCValue<'a>{
-    valuetype: KSCType<'a>,
-    value: AnyValueEnum<'a>
-}
-
 
 ///式
 enum Expression{
@@ -408,7 +446,7 @@ enum Expression{
 
 
 /// 意味解析関連関数 (ASTを解析して対応する関連関数にIRを書かせる)
-impl<'a, 'ctx> Compiler<'a, 'ctx>{
+impl<'a, 'ctx> Compiler<'a, 'ctx> where 'a: 'ctx{
 
     /// ファイルパスから実際のモジュール名を割り出してモジュールを作成する。
     fn initialize_module_by_filepath(&mut self, filepath: &PathBuf) {
@@ -430,13 +468,6 @@ impl<'a, 'ctx> Compiler<'a, 'ctx>{
         }
     }
 
-    /// 型名からKSCTypeを検索して返す
-    fn get_ksctype_from_name(&self, name: &str) -> Option<&KSCType> {
-        let ksctype = self.definedtypes
-            .iter()
-            .find(|t| t.name == name);
-        return ksctype;
-    }
 
     /// 式をコンパイルする
     fn compile_expression(&mut self, expression: &'a Expression) -> &'a KSCValue<'ctx> where 'a: 'ctx{
@@ -458,13 +489,6 @@ impl<'a, 'ctx> Compiler<'a, 'ctx>{
                 if vartype.name != executed.valuetype.name {
                     panic!("Cannot be assigned because the type is different. '{}' <= {}", vartype.name, executed.valuetype.name);
                 }
-                self.reftables.insert(
-                    name.as_str(),
-                    SymbolTable {
-                        stack_number: self.current_stack_number,
-                        kscvalue: &executed
-                    }
-                );
                 return executed;
             },
         }
@@ -496,7 +520,7 @@ fn main() {
         }
     ];
 
-    let context = Context::create();
+    let context = Context::create();// 'ctx
     let builder = context.create_builder();
     let mut compiler = Compiler::new(&context,&builder);
 
