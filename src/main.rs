@@ -66,6 +66,22 @@ impl<'a, 'ctx> Compiler<'a, 'ctx>{
         }
         return None;
     }
+
+    /// KSCType to BasciValueEnum
+    fn get_basic_value_enum_from_ksctype(&self, kscvalue: KSCValue<'ctx>) -> Option<BasicValueEnum<'ctx>>{
+        match kscvalue.value.as_any_value_enum() {
+            AnyValueEnum::ArrayValue(v) => Some(BasicValueEnum::ArrayValue(v)),
+            AnyValueEnum::IntValue(v) => Some(BasicValueEnum::IntValue(v)),
+            AnyValueEnum::FloatValue(v) => Some(BasicValueEnum::FloatValue(v)),
+            AnyValueEnum::PhiValue(v) => None,
+            AnyValueEnum::FunctionValue(v) => None,
+            AnyValueEnum::PointerValue(v) => Some(BasicValueEnum::PointerValue(v)),
+            AnyValueEnum::StructValue(v) => Some(BasicValueEnum::StructValue(v)),
+            AnyValueEnum::VectorValue(v) => Some(BasicValueEnum::VectorValue(v)),
+            AnyValueEnum::InstructionValue(v) => None,
+            AnyValueEnum::MetadataValue(v) => None,
+        }
+    }
 }
 
 /// コンパイル関連関数 (実際にIRを書く)
@@ -422,6 +438,11 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> where 'a: 'ctx{
             panic!("There is no Module yet. Create module first.");
         }
     }
+
+    /// 値をCopy
+    fn create_copy_value(&self, value: &BasicValueEnum<'ctx>) -> BasicValueEnum<'ctx>{
+        return self.builder.build_load(value.into_pointer_value(), "");
+    }
 }
 
 
@@ -496,7 +517,16 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> where 'a: 'ctx{
                 if vartype.name != executed.valuetype.name {
                     panic!("Cannot be assigned because the type is different. '{}' <= {}", vartype.name, executed.valuetype.name);
                 }
-                return executed;
+                let ret = KSCValue{
+                    valuetype: KSCType { name: executed.valuetype.name.as_str().to_string(), reference: executed.valuetype.reference.into_pointer_type().as_any_type_enum() },
+                    value: executed.value.into_pointer_value().as_any_value_enum()
+                };
+                self.stack
+                    .last_mut()
+                    .unwrap_or_else(||panic!())
+                    .values
+                    .push(executed);
+                return ret;
             },
         }
     }
