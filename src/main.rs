@@ -1,5 +1,5 @@
 use crypto::{sha2::Sha256, digest::Digest};
-use inkwell::{context::Context, builder::Builder, module::Module, types::{AnyTypeEnum, BasicMetadataTypeEnum, BasicTypeEnum, PointerType, FunctionType, AnyType}, values::{FunctionValue, BasicValue, AnyValue, BasicValueEnum, IntValue, AnyValueEnum, PointerValue, BasicMetadataValueEnum}, IntPredicate, basic_block::BasicBlock, FloatPredicate, AddressSpace};
+use inkwell::{context::Context, builder::Builder, module::Module, types::{AnyTypeEnum, BasicMetadataTypeEnum, BasicTypeEnum, PointerType, FunctionType, AnyType, BasicType, FloatType, IntType, VectorType, StructType}, values::{FunctionValue, BasicValue, AnyValue, BasicValueEnum, IntValue, AnyValueEnum, PointerValue, BasicMetadataValueEnum}, IntPredicate, basic_block::BasicBlock, FloatPredicate, AddressSpace};
 use std::{env, collections::HashMap, mem::discriminant, path::PathBuf};
 use std::fs::File;
 use std::io::prelude::*;
@@ -19,14 +19,27 @@ enum BinaryOperator{
     REM
 }
 
-struct KSCType<'ctx>{
-    name: String,
-    reference: AnyTypeEnum<'ctx>
+enum KSCType<'ctx>{
+    Number(FloatType<'ctx>),
+    Int32(IntType<'ctx>),
+    Bool(IntType<'ctx>),
+    Function{
+        reference: PointerType<'ctx>,
+        return_type: Box<KSCType<'ctx>>,
+        parameter: Vec<KSCType<'ctx>>
+    },
+    Void,
+    Struct{
+        reference: StructType<'ctx>,
+        contents: Vec<Box<KSCType<'ctx>>>,
+        defaultValues: Vec<KSCValue<'ctx>>,
+    },
+    List(VectorType<'ctx>)
 }
 
 struct KSCValue<'ctx>{
     valuetype: KSCType<'ctx>,
-    value: AnyValueEnum<'ctx>
+    value: Option<BasicValueEnum<'ctx>>
 }
 
 /// スタック(スコープごとに用意する、定義された変数や型を保存するもの。スコープを抜けるとpop)
@@ -44,7 +57,7 @@ struct Compiler<'a, 'ctx>{
     stack: Vec<Stack<'ctx>>
 }
 
-/// スタックなど変数や型の管理のための関連関数
+/// スタックなど変数や型の管理のための関連関数()
 impl<'a, 'ctx> Compiler<'a, 'ctx>{
 
     /// 新しい型を最新のスタックに登録
@@ -55,32 +68,16 @@ impl<'a, 'ctx> Compiler<'a, 'ctx>{
             .push(ksctype);
     }
 
-    /// 型名からKSCTypeを検索して返す
-    fn get_ksctype_from_name(&self, name: &'a str) -> Option<&KSCType<'ctx>> where 'a: 'ctx{
-        for scope in &self.stack{
-            let found = scope.types.iter().find(|ksct| ksct.name == name);
-            match found{
-                Some(_) => return found,
-                None => continue,
-            }
-        }
-        return None;
-    }
-
-    /// KSCType to BasciValueEnum
-    fn get_basic_value_enum_from_ksctype(&self, kscvalue: KSCValue<'ctx>) -> Option<BasicValueEnum<'ctx>>{
-        match kscvalue.value.as_any_value_enum() {
-            AnyValueEnum::ArrayValue(v) => Some(BasicValueEnum::ArrayValue(v)),
-            AnyValueEnum::IntValue(v) => Some(BasicValueEnum::IntValue(v)),
-            AnyValueEnum::FloatValue(v) => Some(BasicValueEnum::FloatValue(v)),
-            AnyValueEnum::PhiValue(v) => None,
-            AnyValueEnum::FunctionValue(v) => None,
-            AnyValueEnum::PointerValue(v) => Some(BasicValueEnum::PointerValue(v)),
-            AnyValueEnum::StructValue(v) => Some(BasicValueEnum::StructValue(v)),
-            AnyValueEnum::VectorValue(v) => Some(BasicValueEnum::VectorValue(v)),
-            AnyValueEnum::InstructionValue(v) => None,
-            AnyValueEnum::MetadataValue(v) => None,
-        }
+    fn search_ksc_type(&mut self, typename: &String) -> KSCType<'ctx>{
+        return match typename.as_str(){
+            "Number" => KSCType::Number(self.context.f64_type()),
+            "Bool" => KSCType::Bool(self.context.custom_width_int_type(1)),
+            "i32" => KSCType::Int32(self.context.i32_type()),
+            "Void" => KSCType::Void,
+            "Function" => todo!(),// TODO: 与えられたKSCValueから検索する
+            "Struct" => todo!(),// TODO: 与えられたKSCValueから検索する
+            _ => panic!("Type '{typename}' is not defined!")
+        };
     }
 }
 
@@ -109,104 +106,43 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> where 'a: 'ctx{
         return return_type.into_function_type();
     }
 
-    /// プリミティブ型を定義
-    fn init_primitive_types(&mut self) {
-
-        // Number -> f64
-        self.insert_new_type_to_stack(
-            KSCType {
-                name: String::from("Number"),
-                reference: AnyTypeEnum::FloatType(self.context.f64_type())
-            }
-        );
-
-        // i32 -> i32
-        self.insert_new_type_to_stack(
-            KSCType {
-                name: String::from("i32"),
-                reference: AnyTypeEnum::IntType(self.context.i32_type())
-            }
-        );
-        
-        // bool -> i1
-        self.insert_new_type_to_stack(
-            KSCType {
-                name: String::from("bool"),
-                reference: AnyTypeEnum::IntType(self.context.custom_width_int_type(1))
-            }
-        );
-        
-        // void -> void
-        self.insert_new_type_to_stack(
-            KSCType {
-                name: String::from("void"),
-                reference: AnyTypeEnum::VoidType(self.context.void_type())
-            }
-        );
-
-    }
-
     /// モジュールを作成
     fn create_module(&mut self, module_name: &str) {
         self.module = Some(self.context.create_module(module_name));
     }
 
     /// 関数を作成(宣言してブロックを作成)
-    fn create_function(&mut self, name: &'a str, return_type: &'a str, param_types: &Vec<&'a str>, param_names: &Vec<&'a str>) -> FunctionValue<'ctx> {
+    fn create_function(&mut self, name: &'a str, return_type: &'a AnyTypeEnum, param_types: &[BasicMetadataTypeEnum], param_names: &Vec<&'a str>) -> FunctionValue<'ctx> {
         self.stack_function.push(name);
 
-        // 仮引数の型を参照
-        let param_types = &param_types.iter().map(|param_type| {
-            if let Some(param_type) = self.get_ksctype_from_name(param_type) {
-                return match param_type.reference {
-                    AnyTypeEnum::ArrayType(t) => BasicMetadataTypeEnum::ArrayType(t),
-                    AnyTypeEnum::FloatType(t) => BasicMetadataTypeEnum::FloatType(t),
-                    AnyTypeEnum::FunctionType(_) => panic!("Function type cannot be param."),
-                    AnyTypeEnum::IntType(t) => BasicMetadataTypeEnum::IntType(t),
-                    AnyTypeEnum::PointerType(t) => BasicMetadataTypeEnum::PointerType(t),
-                    AnyTypeEnum::StructType(t) => BasicMetadataTypeEnum::StructType(t),
-                    AnyTypeEnum::VectorType(t) => BasicMetadataTypeEnum::VectorType(t),
-                    AnyTypeEnum::VoidType(_) => panic!("Void type cannot be param."),
-                }
-            } else {
-                panic!("Param type ({}) not defined!", param_type);
-            }
-        }).collect::<Vec<BasicMetadataTypeEnum>>();
-
         // 戻り値の型を参照
-        if let Some(return_type) = self.get_ksctype_from_name(&return_type) {
-
-            let fn_type = match return_type.reference {
-                AnyTypeEnum::ArrayType(t) => t.fn_type(param_types, false),
-                AnyTypeEnum::FloatType(t) => t.fn_type(param_types, false),
-                AnyTypeEnum::FunctionType(_) => panic!("Function type cannot be returned."),
-                AnyTypeEnum::IntType(t) => t.fn_type(param_types, false),
-                AnyTypeEnum::PointerType(t) => t.fn_type(param_types, false),
-                AnyTypeEnum::StructType(t) => t.fn_type(param_types, false),
-                AnyTypeEnum::VectorType(t) => t.fn_type(param_types, false),
-                AnyTypeEnum::VoidType(t) => t.fn_type(param_types, false),
-            };
-            if let Some(module) = &self.module {
-                let func = module.add_function(name, fn_type, None);
-                let func_bb = self.context.append_basic_block(func, name);
-                self.builder.position_at_end(func_bb);
-                if param_types.len() != param_names.len() {
-                    panic!("The number of parameters does not match the type and name.");
-                }
-                for (i, arg) in func.get_param_iter().enumerate() {
-                    let param_name = param_names[i];
-                    let alloca = self.builder.build_alloca(arg.get_type(), param_name);
-                    self.builder.build_store(alloca, arg);
-                }
-                return func;
+        let fn_type = match return_type{
+            AnyTypeEnum::ArrayType(v) => v.fn_type(param_types.into(), false),
+            AnyTypeEnum::FloatType(v) => v.fn_type(param_types.into(), false),
+            AnyTypeEnum::FunctionType(v) => *v,
+            AnyTypeEnum::IntType(v) => v.fn_type(param_types.into(), false),
+            AnyTypeEnum::PointerType(v) => v.fn_type(param_types.into(), false),
+            AnyTypeEnum::StructType(v) => v.fn_type(param_types.into(), false),
+            AnyTypeEnum::VectorType(v) => v.fn_type(param_types.into(), false),
+            AnyTypeEnum::VoidType(v) => v.fn_type(param_types.into(), false),
+        };
+        if let Some(module) = &self.module {
+            let func = module.add_function(name, fn_type, None);
+            let func_bb = self.context.append_basic_block(func, name);
+            self.builder.position_at_end(func_bb);
+            if param_types.len() != param_names.len() {
+                panic!("The number of parameters does not match the type and name.");
             }
-            else
-            {
-                panic!("Failed to create function ({}). There is no Module yet. Create module first.", name);
+            for (i, arg) in func.get_param_iter().enumerate() {
+                let param_name = param_names[i];
+                let alloca = self.builder.build_alloca(arg.get_type(), param_name);
+                self.builder.build_store(alloca, arg);
             }
+            return func;
         }
-        else {
-            panic!("Return type ({}) not defined!", return_type);
+        else
+        {
+            panic!("Failed to create function ({}). There is no Module yet. Create module first.", name);
         }
     }
 
@@ -293,28 +229,14 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> where 'a: 'ctx{
     }
 
     /// if式を作成(マージ)
-    fn merge_if_branch(&self, then_value: &BasicValueEnum, else_value: &BasicValueEnum, then_block: BasicBlock, else_block: BasicBlock, cont_block: BasicBlock, typename:&'a str) -> BasicValueEnum<'ctx>{
+    fn merge_if_branch(&self, then_value: &BasicValueEnum, else_value: &BasicValueEnum, then_block: BasicBlock, else_block: BasicBlock, cont_block: BasicBlock) -> BasicValueEnum<'ctx>{
         self.builder.position_at_end(cont_block);
         if discriminant(then_value) != discriminant(else_value) {
             panic!("The return value on then and the return value on else have different types.");
         }
-        if let Some(rettype) = self.get_ksctype_from_name(typename) {
-            let rettype = match rettype.reference {
-                AnyTypeEnum::ArrayType(t) => BasicTypeEnum::ArrayType(t),
-                AnyTypeEnum::FloatType(t) => BasicTypeEnum::FloatType(t),
-                AnyTypeEnum::FunctionType(_) => panic!("Function type cannot be param."),
-                AnyTypeEnum::IntType(t) => BasicTypeEnum::IntType(t),
-                AnyTypeEnum::PointerType(t) => BasicTypeEnum::PointerType(t),
-                AnyTypeEnum::StructType(t) => BasicTypeEnum::StructType(t),
-                AnyTypeEnum::VectorType(t) => BasicTypeEnum::VectorType(t),
-                AnyTypeEnum::VoidType(_) => panic!("Void type cannot be param."),
-            };
-            let phi = self.builder.build_phi(rettype, "iftmp");
-            phi.add_incoming(&[(then_value, then_block), (else_value, else_block)]);
-            return phi.as_basic_value();
-        }else{
-            panic!("")
-        }
+        let phi = self.builder.build_phi(then_value.get_type(), "iftmp");
+        phi.add_incoming(&[(then_value, then_block), (else_value, else_block)]);
+        return phi.as_basic_value();
     }
 
     /// 比較演算子
@@ -367,20 +289,14 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> where 'a: 'ctx{
 
     /// 定数
     /// TODO: 符号がマイナスな整数にも対応
-    fn create_constant_number(&'ctx self,type_name: &'a str, number: f64) -> BasicValueEnum<'ctx> {
-        if let Some(constant_type) = self.get_ksctype_from_name(type_name) {
-            return match constant_type.reference {
-                AnyTypeEnum::ArrayType(_) => panic!("Constants of type ArrayType cannot be declared!"),
-                AnyTypeEnum::FloatType(floattype) => BasicValueEnum::FloatValue(floattype.const_float(number)),
-                AnyTypeEnum::FunctionType(_) => panic!("Constants of type ArrayType cannot be declared!"),
-                AnyTypeEnum::IntType(inttype) => BasicValueEnum::IntValue(inttype.const_int(number.round() as u64,false)),
-                AnyTypeEnum::PointerType(_) => panic!("Constants of type ArrayType cannot be declared!"),
-                AnyTypeEnum::StructType(_) => panic!("Constants of type ArrayType cannot be declared!"),
-                AnyTypeEnum::VectorType(_) => panic!("Constants of type ArrayType cannot be declared!"),
-                AnyTypeEnum::VoidType(_) => panic!("Constants of type ArrayType cannot be declared!"),
-            }
-        } else {
-            panic!("Param type ({}) not defined!", type_name);
+    fn create_constant_number(&'ctx self,constant_type: &'a BasicTypeEnum, number: f64) -> BasicValueEnum<'ctx> {
+        return match constant_type {
+            BasicTypeEnum::ArrayType(_) => panic!("Constants of type ArrayType cannot be declared!"),
+            BasicTypeEnum::FloatType(floattype) => BasicValueEnum::FloatValue(floattype.const_float(number)),
+            BasicTypeEnum::IntType(inttype) => BasicValueEnum::IntValue(inttype.const_int(number.round() as u64,false)),
+            BasicTypeEnum::PointerType(_) => panic!("Constants of type PointerType cannot be declared!"),
+            BasicTypeEnum::StructType(_) => panic!("Constants of type StructType cannot be declared!"),
+            BasicTypeEnum::VectorType(_) => panic!("Constants of type VectorType cannot be declared!"),
         }
     }
 
@@ -482,9 +398,6 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> where 'a: 'ctx{
 
     /// ASTを意味解析してLLVMを書く
     fn build(&mut self, program: &'a Vec<Expression>) where 'a: 'ctx{
-        self.init_primitive_types();
-        // self.create_function_declare("printNumber", "void", &vec!["Number"]);
-
         for expression in program{
             self.compile_expression(&expression);
         }
@@ -499,10 +412,41 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> where 'a: 'ctx{
                 // 適当な関数名をつける
                 let param_types: Vec<&str> = param_types.iter().map(|s| &**s).collect();
                 let param_names: Vec<&str> = param_names.iter().map(|s| &**s).collect();
-                let func = self.create_function(name.as_str(), return_type.as_str(), &param_types, &param_names);
+
+                let return_type_ksc = self.search_ksc_type(return_type);
+                let return_type = match return_type_ksc {
+                    KSCType::Number(ft) => AnyTypeEnum::FloatType(ft),
+                    KSCType::Int32(it) => AnyTypeEnum::IntType(it),
+                    KSCType::Bool(it) => AnyTypeEnum::IntType(it),
+                    KSCType::Function { reference, return_type, parameter } => AnyTypeEnum::PointerType(reference),
+                    KSCType::Void => AnyTypeEnum::VoidType(self.context.void_type()),// //! 「こと返り値に関しては」Void型はInkwellのvoid型と同様に扱う。
+                    KSCType::Struct { reference, contents, defaultValues } => AnyTypeEnum::StructType(reference),
+                    KSCType::List(vt) => AnyTypeEnum::VectorType(vt),
+                };
+
+                let param_types_ksc:Vec<KSCType> = param_types
+                    .iter()
+                    .map(|p|self.search_ksc_type(&p.to_string())).collect::<Vec<KSCType>>();
+
+                let param_types:Vec<BasicMetadataTypeEnum> = param_types_ksc
+                    .iter()
+                    .map(|p|{
+                        return match p {
+                            KSCType::Number(ft) => BasicMetadataTypeEnum::FloatType(ft),
+                            KSCType::Int32(it) => BasicMetadataTypeEnum::IntType(it),
+                            KSCType::Bool(it) => BasicMetadataTypeEnum::IntType(it),
+                            KSCType::Function { reference, return_type, parameter } => BasicMetadataTypeEnum::PointerType(reference),
+                            KSCType::Void => panic!("You cannot expect Void as argument."),
+                            KSCType::Struct { reference, contents, defaultValues } => BasicMetadataTypeEnum::StructType(reference),
+                            KSCType::List(vt) => BasicMetadataTypeEnum::VectorType(vt),
+                        }
+                    }).collect::<Vec<BasicMetadataTypeEnum>>();
+
+                let func = self.create_function(name.as_str(), &return_type, &param_types[..], &param_names);
+                let func_ptr = func.get_type().ptr_type(AddressSpace::Generic);
                 let func_kscvalue = KSCValue{
-                    valuetype: KSCType { name: "Function".to_string(), reference: func.get_type().as_any_type_enum() },
-                    value: func.as_any_value_enum(),
+                    valuetype: KSCType::Function { reference: func_ptr, return_type: Box::from(return_type_ksc), parameter: param_types_ksc },
+                    value: Some(func.as_global_value().as_pointer_value().as_basic_value_enum())
                 };
                 return func_kscvalue;
             },
